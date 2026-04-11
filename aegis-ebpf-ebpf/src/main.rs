@@ -11,11 +11,17 @@ use aya_ebpf::{
 use aya_log_ebpf::warn;
 
 const RINGBUF_SIZE_BYTES: u32 = 256 * 1024;
-const BLOCKLIST_MAX_ENTRIES: u32 = 1024;
-const RATE_LIMIT_TS_MAX_ENTRIES: u32 = 4096;
-const RATE_LIMIT_NS: u64 = 1_000_000;
 const PENDING_SYSCALLS_MAX_ENTRIES: u32 = 10_240;
 const PROT_EXEC: u64 = 0x4;
+
+// Rate limiting: max events per second per PID
+const RATE_LIMIT_EVENTS_PER_SEC: u64 = 100;
+const NANOS_PER_SEC: u64 = 1_000_000_000;
+const RATE_LIMIT_INTERVAL_NS: u64 = NANOS_PER_SEC / RATE_LIMIT_EVENTS_PER_SEC;
+
+// Blocklist max entries
+const BLOCKLIST_MAX_ENTRIES: u32 = 1_024;
+const RATE_LIMIT_MAX_ENTRIES: u32 = 10_240;
 
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(RINGBUF_SIZE_BYTES, 0);
@@ -25,15 +31,23 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(RINGBUF_SIZE_BYTES, 0);
 static pending_syscalls: LruHashMap<u64, MemoryEvent> =
     LruHashMap::with_max_entries(PENDING_SYSCALLS_MAX_ENTRIES, 0);
 
+/// PIDs in this map are blocked from emitting events.
+/// Key: tgid (u32), Value: u8 (1 = blocked)
 #[map]
-static BLOCKLIST: HashMap<u32, u32> = HashMap::with_max_entries(BLOCKLIST_MAX_ENTRIES, 0);
+static BLOCKLIST: HashMap<u32, u8> =
+    HashMap::with_max_entries(BLOCKLIST_MAX_ENTRIES, 0);
 
+/// Last timestamp (ns) an event was emitted for a given PID.
+/// Key: tgid (u32), Value: timestamp_ns (u64)
 #[map]
 static RATE_LIMIT_LAST_TS: HashMap<u32, u64> =
-    HashMap::with_max_entries(RATE_LIMIT_TS_MAX_ENTRIES, 0);
+    HashMap::with_max_entries(RATE_LIMIT_MAX_ENTRIES, 0);
 
+/// Count of rate-limited (dropped) events per PID.
+/// Key: tgid (u32), Value: count (u64)
 #[map]
-static RATE_LIMITED_COUNT: Array<u64> = Array::with_max_entries(1, 0);
+static RATE_LIMITED_COUNT: HashMap<u32, u64> =
+    HashMap::with_max_entries(RATE_LIMIT_MAX_ENTRIES, 0);
 
 #[inline(always)]
 fn read_syscall_args(ctx: &TracePointContext) -> [u64; SYSCALL_ARG_COUNT] {
@@ -58,27 +72,40 @@ fn store_pending_event(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
     let pid_tgid = bpf_get_current_pid_tgid();
     let tgid = (pid_tgid >> 32) as u32;
 
+    // --- Blocklist check ---
+    // SAFETY: map lookup with a valid stack pointer key.
     if unsafe { BLOCKLIST.get(&tgid) }.is_some() {
         return 0;
     }
 
-    // SAFETY: helper reads kernel monotonic time and has no pointer inputs.
-    let now = unsafe { bpf_ktime_get_ns() };
-    if let Some(last_ts) = unsafe { RATE_LIMIT_LAST_TS.get(&tgid) } {
-        if now - *last_ts < RATE_LIMIT_NS {
-            if let Some(count) = unsafe { RATE_LIMITED_COUNT.get_ptr_mut(0) } {
-                // SAFETY: get_ptr_mut returns a valid in-map pointer for index 0 while this program runs.
-                unsafe { *count += 1 };
-            }
-            return 0;
-        }
+    // --- Rate limiting check ---
+    // SAFETY: bpf_ktime_get_ns has no pointer inputs.
+    let now_ns = unsafe { bpf_ktime_get_ns() };
+
+    // SAFETY: map lookup with a valid stack pointer key.
+    let last_ts = unsafe { RATE_LIMIT_LAST_TS.get(&tgid).copied().unwrap_or(0) };
+
+    if now_ns.saturating_sub(last_ts) < RATE_LIMIT_INTERVAL_NS {
+        // Rate limit exceeded: increment drop counter and bail.
+        // SAFETY: map lookup with a valid stack pointer key.
+        let prev_count = unsafe {
+            RATE_LIMITED_COUNT
+                .get(&tgid)
+                .copied()
+                .unwrap_or(0)
+        };
+        let new_count = prev_count.saturating_add(1);
+        let _ = RATE_LIMITED_COUNT.insert(&tgid, &new_count, 0);
+        return 0;
     }
-    let _ = RATE_LIMIT_LAST_TS.insert(&tgid, &now, 0);
+
+    // Update last-seen timestamp for this TGID.
+    let _ = RATE_LIMIT_LAST_TS.insert(&tgid, &now_ns, 0);
 
     let comm = bpf_get_current_comm().unwrap_or([0; TASK_COMM_LEN]);
 
     let event = MemoryEvent {
-        timestamp_ns: now,
+        timestamp_ns: now_ns,
         pid: pid_tgid as u32,
         tgid,
         syscall: syscall as u32,
@@ -129,89 +156,41 @@ fn emit_pending_event_on_success(ctx: &TracePointContext, syscall: MemorySyscall
 
 #[tracepoint]
 pub fn sys_enter_mmap(ctx: TracePointContext) -> u32 {
-    // Force map retention - prevent LLVM dead code elimination.
-    unsafe {
-        let _ = BLOCKLIST.get(&0u32);
-        let _ = RATE_LIMIT_LAST_TS.get(&0u32);
-        let _ = RATE_LIMITED_COUNT.get_ptr(0);
-    }
     store_pending_event(&ctx, MemorySyscall::Mmap)
 }
 
 #[tracepoint]
 pub fn sys_enter_mprotect(ctx: TracePointContext) -> u32 {
-    // Force map retention - prevent LLVM dead code elimination.
-    unsafe {
-        let _ = BLOCKLIST.get(&0u32);
-        let _ = RATE_LIMIT_LAST_TS.get(&0u32);
-        let _ = RATE_LIMITED_COUNT.get_ptr(0);
-    }
     store_pending_event(&ctx, MemorySyscall::Mprotect)
 }
 
 #[tracepoint]
 pub fn sys_enter_memfd_create(ctx: TracePointContext) -> u32 {
-    // Force map retention - prevent LLVM dead code elimination.
-    unsafe {
-        let _ = BLOCKLIST.get(&0u32);
-        let _ = RATE_LIMIT_LAST_TS.get(&0u32);
-        let _ = RATE_LIMITED_COUNT.get_ptr(0);
-    }
     store_pending_event(&ctx, MemorySyscall::MemfdCreate)
 }
 
 #[tracepoint]
 pub fn sys_enter_ptrace(ctx: TracePointContext) -> u32 {
-    // Force map retention - prevent LLVM dead code elimination.
-    unsafe {
-        let _ = BLOCKLIST.get(&0u32);
-        let _ = RATE_LIMIT_LAST_TS.get(&0u32);
-        let _ = RATE_LIMITED_COUNT.get_ptr(0);
-    }
     store_pending_event(&ctx, MemorySyscall::Ptrace)
 }
 
 #[tracepoint]
 pub fn sys_exit_mmap(ctx: TracePointContext) -> u32 {
-    // Force map retention - prevent LLVM dead code elimination.
-    unsafe {
-        let _ = BLOCKLIST.get(&0u32);
-        let _ = RATE_LIMIT_LAST_TS.get(&0u32);
-        let _ = RATE_LIMITED_COUNT.get_ptr(0);
-    }
     emit_pending_event_on_success(&ctx, MemorySyscall::Mmap)
 }
 
 #[tracepoint]
 pub fn sys_exit_mprotect(ctx: TracePointContext) -> u32 {
-    // Force map retention - prevent LLVM dead code elimination.
-    unsafe {
-        let _ = BLOCKLIST.get(&0u32);
-        let _ = RATE_LIMIT_LAST_TS.get(&0u32);
-        let _ = RATE_LIMITED_COUNT.get_ptr(0);
-    }
     emit_pending_event_on_success(&ctx, MemorySyscall::Mprotect)
 }
 
 #[tracepoint]
 pub fn sys_exit_memfd_create(ctx: TracePointContext) -> u32 {
-    // Force map retention - prevent LLVM dead code elimination.
-    unsafe {
-        let _ = BLOCKLIST.get(&0u32);
-        let _ = RATE_LIMIT_LAST_TS.get(&0u32);
-        let _ = RATE_LIMITED_COUNT.get_ptr(0);
-    }
     emit_pending_event_on_success(&ctx, MemorySyscall::MemfdCreate)
 }
 
 #[tracepoint]
 pub fn sys_exit_ptrace(ctx: TracePointContext) -> u32 {
-    // Force map retention - prevent LLVM dead code elimination.
-    unsafe {
-        let _ = BLOCKLIST.get(&0u32);
-        let _ = RATE_LIMIT_LAST_TS.get(&0u32);
-        let _ = RATE_LIMITED_COUNT.get_ptr(0);
-    }
     emit_pending_event_on_success(&ctx, MemorySyscall::Ptrace)
 }
 
