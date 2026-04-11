@@ -5,7 +5,7 @@ use aegis_ebpf_common::{MemoryEvent, MemorySyscall, SYSCALL_ARG_COUNT, TASK_COMM
 use aya_ebpf::{
     helpers::{bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_ktime_get_ns},
     macros::{map, tracepoint},
-    maps::{Array, HashMap, LruHashMap, RingBuf},
+    maps::{HashMap, LruHashMap, RingBuf},
     programs::TracePointContext,
 };
 use aya_log_ebpf::warn;
@@ -13,15 +13,11 @@ use aya_log_ebpf::warn;
 const RINGBUF_SIZE_BYTES: u32 = 256 * 1024;
 const PENDING_SYSCALLS_MAX_ENTRIES: u32 = 10_240;
 const PROT_EXEC: u64 = 0x4;
-
-// Rate limiting: max events per second per PID
+const BLOCKLIST_MAX_ENTRIES: u32 = 1_024;
+const RATE_LIMIT_MAX_ENTRIES: u32 = 10_240;
 const RATE_LIMIT_EVENTS_PER_SEC: u64 = 100;
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 const RATE_LIMIT_INTERVAL_NS: u64 = NANOS_PER_SEC / RATE_LIMIT_EVENTS_PER_SEC;
-
-// Blocklist max entries
-const BLOCKLIST_MAX_ENTRIES: u32 = 1_024;
-const RATE_LIMIT_MAX_ENTRIES: u32 = 10_240;
 
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(RINGBUF_SIZE_BYTES, 0);
@@ -31,20 +27,14 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(RINGBUF_SIZE_BYTES, 0);
 static pending_syscalls: LruHashMap<u64, MemoryEvent> =
     LruHashMap::with_max_entries(PENDING_SYSCALLS_MAX_ENTRIES, 0);
 
-/// PIDs in this map are blocked from emitting events.
-/// Key: tgid (u32), Value: u8 (1 = blocked)
 #[map]
 static BLOCKLIST: HashMap<u32, u8> =
     HashMap::with_max_entries(BLOCKLIST_MAX_ENTRIES, 0);
 
-/// Last timestamp (ns) an event was emitted for a given PID.
-/// Key: tgid (u32), Value: timestamp_ns (u64)
 #[map]
 static RATE_LIMIT_LAST_TS: HashMap<u32, u64> =
     HashMap::with_max_entries(RATE_LIMIT_MAX_ENTRIES, 0);
 
-/// Count of rate-limited (dropped) events per PID.
-/// Key: tgid (u32), Value: count (u64)
 #[map]
 static RATE_LIMITED_COUNT: HashMap<u32, u64> =
     HashMap::with_max_entries(RATE_LIMIT_MAX_ENTRIES, 0);
@@ -52,17 +42,11 @@ static RATE_LIMITED_COUNT: HashMap<u32, u64> =
 #[inline(always)]
 fn read_syscall_args(ctx: &TracePointContext) -> [u64; SYSCALL_ARG_COUNT] {
     [
-        // SAFETY: tracepoint context memory is kernel-provided; read_at performs helper-based probing.
         unsafe { ctx.read_at::<u64>(16).unwrap_or(0) },
-        // SAFETY: tracepoint context memory is kernel-provided; read_at performs helper-based probing.
         unsafe { ctx.read_at::<u64>(24).unwrap_or(0) },
-        // SAFETY: tracepoint context memory is kernel-provided; read_at performs helper-based probing.
         unsafe { ctx.read_at::<u64>(32).unwrap_or(0) },
-        // SAFETY: tracepoint context memory is kernel-provided; read_at performs helper-based probing.
         unsafe { ctx.read_at::<u64>(40).unwrap_or(0) },
-        // SAFETY: tracepoint context memory is kernel-provided; read_at performs helper-based probing.
         unsafe { ctx.read_at::<u64>(48).unwrap_or(0) },
-        // SAFETY: tracepoint context memory is kernel-provided; read_at performs helper-based probing.
         unsafe { ctx.read_at::<u64>(56).unwrap_or(0) },
     ]
 }
@@ -72,38 +56,23 @@ fn store_pending_event(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
     let pid_tgid = bpf_get_current_pid_tgid();
     let tgid = (pid_tgid >> 32) as u32;
 
-    // --- Blocklist check ---
-    // SAFETY: map lookup with a valid stack pointer key.
     if unsafe { BLOCKLIST.get(&tgid) }.is_some() {
         return 0;
     }
 
-    // --- Rate limiting check ---
-    // SAFETY: bpf_ktime_get_ns has no pointer inputs.
     let now_ns = unsafe { bpf_ktime_get_ns() };
-
-    // SAFETY: map lookup with a valid stack pointer key.
     let last_ts = unsafe { RATE_LIMIT_LAST_TS.get(&tgid).copied().unwrap_or(0) };
 
     if now_ns.saturating_sub(last_ts) < RATE_LIMIT_INTERVAL_NS {
-        // Rate limit exceeded: increment drop counter and bail.
-        // SAFETY: map lookup with a valid stack pointer key.
-        let prev_count = unsafe {
-            RATE_LIMITED_COUNT
-                .get(&tgid)
-                .copied()
-                .unwrap_or(0)
-        };
-        let new_count = prev_count.saturating_add(1);
-        let _ = RATE_LIMITED_COUNT.insert(&tgid, &new_count, 0);
+        let prev = unsafe { RATE_LIMITED_COUNT.get(&tgid).copied().unwrap_or(0) };
+        let next = prev.saturating_add(1);
+        let _ = RATE_LIMITED_COUNT.insert(&tgid, &next, 0);
         return 0;
     }
 
-    // Update last-seen timestamp for this TGID.
     let _ = RATE_LIMIT_LAST_TS.insert(&tgid, &now_ns, 0);
 
     let comm = bpf_get_current_comm().unwrap_or([0; TASK_COMM_LEN]);
-
     let event = MemoryEvent {
         timestamp_ns: now_ns,
         pid: pid_tgid as u32,
@@ -124,14 +93,9 @@ fn store_pending_event(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
 #[inline(always)]
 fn emit_pending_event_on_success(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
     let pid_tgid = bpf_get_current_pid_tgid();
-    // SAFETY: tracepoint context memory is kernel-provided; read_at performs helper-based probing.
     let ret = unsafe { ctx.read_at::<i64>(16).unwrap_or(-1) };
-
-    // SAFETY: We immediately copy the looked-up value and never keep a borrowed reference around.
     let event = unsafe { pending_syscalls.get(&pid_tgid).copied() };
-    let Some(event) = event else {
-        return 0;
-    };
+    let Some(event) = event else { return 0 };
 
     if ret < 0 {
         let _ = pending_syscalls.remove(&pid_tgid);
