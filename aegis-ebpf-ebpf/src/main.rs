@@ -12,7 +12,8 @@ use aya_log_ebpf::warn;
 
 const RINGBUF_SIZE_BYTES: u32 = 256 * 1024;
 const SYSCALL_ARGS_OFFSET: usize = 16;
-const SYSCALL_RET_OFFSET: usize = 16;
+const SYSCALL_RET_OFFSET_PRIMARY: usize = 16;
+const SYSCALL_RET_OFFSET_FALLBACK: usize = 8;
 const PENDING_SYSCALLS_MAX_ENTRIES: u32 = 10_240;
 const PROT_EXEC: u64 = 0x4;
 
@@ -141,7 +142,14 @@ fn read_syscall_arg(ctx: &TracePointContext, arg_index: usize) -> u64 {
 #[inline(always)]
 fn read_syscall_ret(ctx: &TracePointContext) -> i64 {
     // SAFETY: tracepoint context memory is kernel-provided; read_at performs helper-based probing.
-    unsafe { ctx.read_at::<i64>(SYSCALL_RET_OFFSET).unwrap_or(-1) }
+    unsafe {
+        match ctx.read_at::<i64>(SYSCALL_RET_OFFSET_PRIMARY) {
+            Ok(ret) => ret,
+            Err(_) => ctx
+                .read_at::<i64>(SYSCALL_RET_OFFSET_FALLBACK)
+                .unwrap_or(-1),
+        }
+    }
 }
 
 #[cfg(not(test))]
