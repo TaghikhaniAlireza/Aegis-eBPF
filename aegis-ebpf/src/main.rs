@@ -2,7 +2,10 @@ use std::convert::TryFrom as _;
 
 use aegis_ebpf_common::{MemoryEvent, MemorySyscall, TASK_COMM_LEN};
 use anyhow::Context as _;
-use aya::{maps::RingBuf, programs::TracePoint};
+use aya::{
+    maps::{Array, HashMap, RingBuf},
+    programs::TracePoint,
+};
 #[rustfmt::skip]
 use log::{debug, warn};
 use tokio::signal;
@@ -60,6 +63,8 @@ async fn main() -> anyhow::Result<()> {
     attach_syscall_tracepoint(&mut ebpf, "sys_exit_memfd_create", "sys_exit_memfd_create")?;
     attach_syscall_tracepoint(&mut ebpf, "sys_exit_ptrace", "sys_exit_ptrace")?;
 
+    populate_blocklist(&mut ebpf)?;
+
     let ring_buf = RingBuf::try_from(
         ebpf.take_map("EVENTS")
             .context("eBPF map EVENTS not found")?,
@@ -88,6 +93,33 @@ async fn main() -> anyhow::Result<()> {
     }
 
     println!("Exiting...");
+
+    Ok(())
+}
+
+fn populate_blocklist(ebpf: &mut aya::Ebpf) -> anyhow::Result<()> {
+    let mut blocklist = HashMap::<_, u32, u32>::try_from(
+        ebpf.map_mut("BLOCKLIST")
+            .context("eBPF map BLOCKLIST not found")?,
+    )?;
+
+    // Block common system processes that generate noise.
+    // NOTE: Keep this minimal and deterministic for now; dynamic /proc discovery can be added later.
+    let blocked_tgids = [1_u32, 2_u32];
+    for tgid in blocked_tgids {
+        blocklist.insert(tgid, 1, 0)?;
+    }
+
+    let rate_limited_count = Array::<_, u64>::try_from(
+        ebpf.map("RATE_LIMITED_COUNT")
+            .context("eBPF map RATE_LIMITED_COUNT not found")?,
+    )?;
+    let dropped = rate_limited_count.get(&0, 0).unwrap_or(0);
+    println!(
+        "Kernel filter blocklist initialized ({} TGIDs). rate_limited_drops={}",
+        blocked_tgids.len(),
+        dropped
+    );
 
     Ok(())
 }

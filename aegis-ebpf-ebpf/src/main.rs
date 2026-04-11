@@ -5,12 +5,15 @@ use aegis_ebpf_common::{MemoryEvent, MemorySyscall, SYSCALL_ARG_COUNT, TASK_COMM
 use aya_ebpf::{
     helpers::{bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_ktime_get_ns},
     macros::{map, tracepoint},
-    maps::{LruHashMap, RingBuf},
+    maps::{Array, HashMap, LruHashMap, RingBuf},
     programs::TracePointContext,
 };
 use aya_log_ebpf::warn;
 
 const RINGBUF_SIZE_BYTES: u32 = 256 * 1024;
+const BLOCKLIST_MAX_ENTRIES: u32 = 1024;
+const RATE_LIMIT_TS_MAX_ENTRIES: u32 = 4096;
+const RATE_LIMIT_NS: u64 = 1_000_000;
 const PENDING_SYSCALLS_MAX_ENTRIES: u32 = 10_240;
 const PROT_EXEC: u64 = 0x4;
 
@@ -21,6 +24,16 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(RINGBUF_SIZE_BYTES, 0);
 #[map]
 static pending_syscalls: LruHashMap<u64, MemoryEvent> =
     LruHashMap::with_max_entries(PENDING_SYSCALLS_MAX_ENTRIES, 0);
+
+#[map]
+static BLOCKLIST: HashMap<u32, u32> = HashMap::with_max_entries(BLOCKLIST_MAX_ENTRIES, 0);
+
+#[map]
+static RATE_LIMIT_LAST_TS: HashMap<u32, u64> =
+    HashMap::with_max_entries(RATE_LIMIT_TS_MAX_ENTRIES, 0);
+
+#[map]
+static RATE_LIMITED_COUNT: Array<u64> = Array::with_max_entries(1, 0);
 
 #[inline(always)]
 fn read_syscall_args(ctx: &TracePointContext) -> [u64; SYSCALL_ARG_COUNT] {
@@ -43,13 +56,28 @@ fn read_syscall_args(ctx: &TracePointContext) -> [u64; SYSCALL_ARG_COUNT] {
 #[inline(always)]
 fn store_pending_event(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
     let pid_tgid = bpf_get_current_pid_tgid();
+    let tgid = (pid_tgid >> 32) as u32;
+
+    if unsafe { BLOCKLIST.get(&tgid).is_some() } {
+        return 0;
+    }
+
+    // SAFETY: helper reads kernel monotonic time and has no pointer inputs.
+    let now = unsafe { bpf_ktime_get_ns() };
+    if let Some(&last_ts) = unsafe { RATE_LIMIT_LAST_TS.get(&tgid) } {
+        if now.saturating_sub(last_ts) < RATE_LIMIT_NS {
+            increment_rate_limited_count();
+            return 0;
+        }
+    }
+    let _ = RATE_LIMIT_LAST_TS.insert(tgid, now, 0);
+
     let comm = bpf_get_current_comm().unwrap_or([0; TASK_COMM_LEN]);
 
     let event = MemoryEvent {
-        // SAFETY: helper reads kernel monotonic time and has no pointer inputs.
-        timestamp_ns: unsafe { bpf_ktime_get_ns() },
+        timestamp_ns: now,
         pid: pid_tgid as u32,
-        tgid: (pid_tgid >> 32) as u32,
+        tgid,
         syscall: syscall as u32,
         args: read_syscall_args(ctx),
         comm,
@@ -61,6 +89,16 @@ fn store_pending_event(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
     }
 
     0
+}
+
+#[inline(always)]
+fn increment_rate_limited_count() {
+    if let Some(counter_ptr) = RATE_LIMITED_COUNT.get_ptr_mut(0) {
+        // SAFETY: get_ptr_mut returns a valid in-map pointer for index 0 while this program runs.
+        unsafe {
+            *counter_ptr = (*counter_ptr).saturating_add(1);
+        }
+    }
 }
 
 #[inline(always)]
