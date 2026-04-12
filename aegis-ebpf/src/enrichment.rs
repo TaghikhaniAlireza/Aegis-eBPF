@@ -5,6 +5,7 @@ pub mod kubernetes;
 #[cfg(feature = "kubernetes")]
 pub use kubernetes::KubernetesEnricher;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PodMetadata {
     pub pod_name: String,
     pub namespace: String,

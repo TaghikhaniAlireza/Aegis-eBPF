@@ -18,23 +18,48 @@ use kube::{
     Api, Client,
     api::ListParams,
 };
+use moka::sync::Cache;
+use std::{future::Future, time::Duration};
 
 use crate::{ContextEnricher, PodMetadata};
 
+const CACHE_MAX_CAPACITY: u64 = 10_000;
+const CACHE_TTL_SECONDS: u64 = 60;
+
 pub struct KubernetesEnricher {
     client: Client,
+    cache: Cache<u64, PodMetadata>,
+}
+
+async fn enrich_with_cache<F, Fut>(
+    cache: &Cache<u64, PodMetadata>,
+    cgroup_id: u64,
+    lookup: F,
+) -> Option<PodMetadata>
+where
+    F: FnOnce(u64) -> Fut,
+    Fut: Future<Output = Option<PodMetadata>>,
+{
+    if let Some(metadata) = cache.get(&cgroup_id) {
+        return Some(metadata);
+    }
+
+    let metadata = lookup(cgroup_id).await?;
+    cache.insert(cgroup_id, metadata.clone());
+    Some(metadata)
 }
 
 impl KubernetesEnricher {
     pub async fn new() -> Option<Self> {
         let client = Client::try_default().await.ok()?;
-        Some(Self { client })
+        let cache = Cache::builder()
+            .max_capacity(CACHE_MAX_CAPACITY)
+            .time_to_live(Duration::from_secs(CACHE_TTL_SECONDS))
+            .build();
+        Some(Self { client, cache })
     }
-}
 
-#[async_trait]
-impl ContextEnricher for KubernetesEnricher {
-    async fn enrich(&self, cgroup_id: u64) -> Option<PodMetadata> {
+    async fn lookup_pod_metadata(&self, cgroup_id: u64) -> Option<PodMetadata> {
         let pods: Api<Pod> = Api::all(self.client.clone());
         let pod_list = pods.list(&ListParams::default()).await.ok()?;
         let cgroup_hex = format!("{cgroup_id:x}");
@@ -68,19 +93,82 @@ impl ContextEnricher for KubernetesEnricher {
     }
 }
 
+#[async_trait]
+impl ContextEnricher for KubernetesEnricher {
+    async fn enrich(&self, cgroup_id: u64) -> Option<PodMetadata> {
+        enrich_with_cache(&self.cache, cgroup_id, |id| self.lookup_pod_metadata(id)).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
+    use moka::sync::Cache;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use crate::{ContextEnricher, PodMetadata};
 
-    use super::KubernetesEnricher;
+    use super::{KubernetesEnricher, enrich_with_cache};
 
     fn assert_context_enricher<T: ContextEnricher>() {}
 
     #[test]
     fn kubernetes_enricher_implements_context_enricher() {
         assert_context_enricher::<KubernetesEnricher>();
+    }
+
+    #[tokio::test]
+    async fn cache_miss_triggers_lookup_and_populates_cache() {
+        let cache = Cache::new(100);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_lookup = Arc::clone(&calls);
+        let expected = PodMetadata {
+            pod_name: "miss-pod".to_string(),
+            namespace: "default".to_string(),
+            node_name: "node-a".to_string(),
+        };
+        let expected_for_lookup = expected.clone();
+        let enriched = enrich_with_cache(&cache, 42, move |_| {
+            let calls = Arc::clone(&calls_for_lookup);
+            let expected = expected_for_lookup.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Some(expected)
+            }
+        })
+        .await;
+
+        assert_eq!(enriched, Some(expected.clone()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(cache.get(&42), Some(expected));
+    }
+
+    #[tokio::test]
+    async fn cache_hit_returns_without_requerying() {
+        let cache = Cache::new(100);
+        let expected = PodMetadata {
+            pod_name: "hit-pod".to_string(),
+            namespace: "kube-system".to_string(),
+            node_name: "node-b".to_string(),
+        };
+        cache.insert(42, expected.clone());
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_lookup = Arc::clone(&calls);
+        let enriched = enrich_with_cache(&cache, 42, move |_| {
+            let calls = Arc::clone(&calls_for_lookup);
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                None
+            }
+        })
+        .await;
+
+        assert_eq!(enriched, Some(expected));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     struct MockEnricher;
