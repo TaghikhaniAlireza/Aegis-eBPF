@@ -17,14 +17,14 @@ use log::{debug, warn};
 use tokio::sync::mpsc;
 
 pub struct SensorConfig {
-    pub blocklist_pids: Vec<u32>,
+    pub allowlist_pids: Vec<u32>,
     pub channel_capacity: usize,
 }
 
 impl Default for SensorConfig {
     fn default() -> Self {
         Self {
-            blocklist_pids: vec![],
+            allowlist_pids: vec![],
             channel_capacity: 1024,
         }
     }
@@ -49,7 +49,7 @@ pub async fn start_sensor(config: SensorConfig) -> anyhow::Result<mpsc::Receiver
     attach_syscall_tracepoint(&mut ebpf, "sys_exit_memfd_create", "sys_exit_memfd_create")?;
     attach_syscall_tracepoint(&mut ebpf, "sys_exit_ptrace", "sys_exit_ptrace")?;
 
-    populate_blocklist(&mut ebpf, &config.blocklist_pids)?;
+    populate_allowlist(&mut ebpf, &config.allowlist_pids)?;
 
     let ring_buf = RingBuf::try_from(
         ebpf.take_map("EVENTS")
@@ -125,13 +125,13 @@ fn attach_syscall_tracepoint(
     Ok(())
 }
 
-fn populate_blocklist(ebpf: &mut Ebpf, blocklist_pids: &[u32]) -> anyhow::Result<()> {
-    let mut blocklist = HashMap::<_, u32, u8>::try_from(
-        ebpf.map_mut("BLOCKLIST")
-            .context("eBPF map BLOCKLIST not found")?,
+fn populate_allowlist(ebpf: &mut Ebpf, allowlist_pids: &[u32]) -> anyhow::Result<()> {
+    let mut allowlist = HashMap::<_, u32, u8>::try_from(
+        ebpf.map_mut("ALLOWLIST")
+            .context("eBPF map ALLOWLIST not found")?,
     )?;
-    for &tgid in blocklist_pids {
-        blocklist.insert(tgid, 1u8, 0)?;
+    for &tgid in allowlist_pids {
+        allowlist.insert(tgid, 1u8, 0)?;
     }
     Ok(())
 }
