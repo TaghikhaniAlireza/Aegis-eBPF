@@ -56,4 +56,8 @@ impl RuleSet {
         }
         Ok(Self { rules: parsed.rules })
     }
+
+    pub fn empty() -> Self {
+        Self { rules: Vec::new() }
+    }
 }

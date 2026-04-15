@@ -14,9 +14,10 @@ use tracing::warn as tracing_warn;
 
 use crate::{
     alert::{Alert, AlertCallback},
-    rules::{RuleError, loader::RuleSet},
+    rules::{RuleError, loader::RuleSet, watcher::RuleWatcher},
     start_sensor, ContextEnricher, PodMetadata, SensorConfig,
 };
+use arc_swap::ArcSwap;
 
 pub mod config;
 
@@ -78,6 +79,31 @@ fn load_rules(config: &config::PipelineConfig) -> Result<Arc<RuleSet>, PipelineE
     Ok(Arc::new(RuleSet::default()))
 }
 
+enum PipelineRules {
+    Static(Arc<ArcSwap<RuleSet>>),
+    Watched(RuleWatcher),
+}
+
+impl PipelineRules {
+    fn current(&self) -> Arc<ArcSwap<RuleSet>> {
+        match self {
+            Self::Static(rules) => Arc::clone(rules),
+            Self::Watched(watcher) => watcher.rules(),
+        }
+    }
+}
+
+fn init_pipeline_rules(config: &config::PipelineConfig) -> Result<PipelineRules, PipelineError> {
+    if let Some(path) = &config.rules_path {
+        let watcher = RuleWatcher::new(path.clone()).map_err(PipelineError::RuleLoadFailed)?;
+        return Ok(PipelineRules::Watched(watcher));
+    }
+
+    Ok(PipelineRules::Static(Arc::new(ArcSwap::from_pointee(
+        RuleSet::default(),
+    ))))
+}
+
 pub async fn start_pipeline(
     sensor_config: SensorConfig,
     pipeline_config: config::PipelineConfig,
@@ -88,7 +114,7 @@ pub async fn start_pipeline(
         "partition_count must be a power of 2"
     );
 
-    let rules = load_rules(&pipeline_config)?;
+    let rules = init_pipeline_rules(&pipeline_config)?;
     let raw_rx = start_sensor(sensor_config)
         .await
         .map_err(PipelineError::SensorStartFailed)?;
@@ -96,7 +122,7 @@ pub async fn start_pipeline(
         raw_rx,
         pipeline_config,
         enricher,
-        rules,
+        rules.current(),
     ))
 }
 
@@ -106,12 +132,12 @@ pub(crate) fn start_pipeline_from_receiver_for_tests(
     pipeline_config: config::PipelineConfig,
     enricher: Arc<dyn ContextEnricher>,
 ) -> Result<PipelineHandle, PipelineError> {
-    let rules = load_rules(&pipeline_config)?;
+    let rules = init_pipeline_rules(&pipeline_config)?;
     Ok(spawn_pipeline_from_raw(
         raw_rx,
         pipeline_config,
         enricher,
-        rules,
+        rules.current(),
     ))
 }
 
@@ -119,7 +145,7 @@ fn spawn_pipeline_from_raw(
     raw_rx: mpsc::Receiver<MemoryEvent>,
     pipeline_config: config::PipelineConfig,
     enricher: Arc<dyn ContextEnricher>,
-    rules: Arc<RuleSet>,
+    rules: Arc<ArcSwap<RuleSet>>,
 ) -> PipelineHandle {
     assert!(
         pipeline_config.partition_count.is_power_of_two(),
@@ -295,11 +321,12 @@ fn route_partition_index(tgid: u32, partition_count: usize) -> usize {
 async fn run_partition_worker(
     mut rx: mpsc::Receiver<EnrichedEvent>,
     merge_tx: mpsc::Sender<EnrichedEvent>,
-    rules: Arc<RuleSet>,
+    rules: Arc<ArcSwap<RuleSet>>,
     on_alert: Option<AlertCallback>,
 ) {
     while let Some(event) = rx.recv().await {
-        let matches = rules.evaluate(&event);
+        let current_rules = rules.load();
+        let matches = current_rules.evaluate(&event);
         for rule in &matches {
             tracing_warn!(
                 tgid = event.inner.tgid,
@@ -322,7 +349,7 @@ async fn run_partition_router(
     final_tx: mpsc::Sender<EnrichedEvent>,
     partition_count: usize,
     partition_buffer_size: usize,
-    rules: Arc<RuleSet>,
+    rules: Arc<ArcSwap<RuleSet>>,
     on_alert: Option<AlertCallback>,
 ) {
     let mut partition_txs = Vec::with_capacity(partition_count);
@@ -360,6 +387,11 @@ impl PipelineHandle {
 
     pub async fn shutdown(self) {
         drop(self.shutdown_tx);
+    }
+
+    pub fn reload_rules(&self) -> Result<(), PipelineError> {
+        // Manual reload not needed; watcher handles it automatically.
+        Ok(())
     }
 }
 

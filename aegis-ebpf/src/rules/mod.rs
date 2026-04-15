@@ -1,4 +1,6 @@
 pub mod loader;
+pub mod watcher;
+pub mod watcher;
 
 use std::{error::Error, fmt};
 
