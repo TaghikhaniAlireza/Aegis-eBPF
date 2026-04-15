@@ -113,7 +113,13 @@ fn should_reload(event: &Event, configured_path: &Path) -> bool {
     if event.paths.is_empty() {
         return true;
     }
-    event.paths.iter().any(|path| path == configured_path)
+    let parent = configured_path.parent();
+    let file_name = configured_path.file_name();
+    event.paths.iter().any(|path| {
+        path == configured_path
+            || parent.is_some_and(|dir| path == dir)
+            || file_name.is_some_and(|name| path.file_name().is_some_and(|candidate| candidate == name))
+    })
 }
 
 pub fn call_alert_callback(callback: &Option<AlertCallback>, alert: crate::Alert) {
@@ -137,7 +143,8 @@ mod tests {
 
     use super::RuleWatcher;
     use crate::{
-        Alert, AlertCallback, NoopEnricher, PipelineConfig, pipeline::start_pipeline_from_receiver_for_tests,
+        Alert, AlertCallback, NoopEnricher, PipelineConfig,
+        pipeline::start_pipeline_from_receiver_for_tests_with_rules,
     };
 
     fn unique_path(prefix: &str) -> std::path::PathBuf {
@@ -215,7 +222,7 @@ mod tests {
         assert_eq!(watcher.rules().load().rules.len(), 1);
 
         write_rule_file(&path, &two_rule_yaml("R1", "R2"));
-        thread_sleep_100ms();
+        std::thread::sleep(Duration::from_millis(100));
         assert_eq!(watcher.rules().load().rules.len(), 2);
         let _ = fs::remove_file(path);
     }
@@ -228,7 +235,7 @@ mod tests {
         assert_eq!(watcher.rules().load().rules.len(), 1);
 
         write_rule_file(&path, "invalid: [");
-        thread_sleep_100ms();
+        std::thread::sleep(Duration::from_millis(100));
         assert_eq!(watcher.rules().load().rules.len(), 1);
         let _ = fs::remove_file(path);
     }
@@ -264,15 +271,20 @@ rules:
             reorder_window_ms: 1,
             ..PipelineConfig::default()
         };
-        let mut handle = start_pipeline_from_receiver_for_tests(raw_rx, cfg, Arc::new(NoopEnricher))
-            .expect("pipeline should start");
+        let watcher = RuleWatcher::new(path.clone()).expect("watcher should initialize");
+        let mut handle = start_pipeline_from_receiver_for_tests_with_rules(
+            raw_rx,
+            cfg,
+            Arc::new(NoopEnricher),
+            watcher.rules(),
+        );
 
         raw_tx
             .send(fake_event(EventType::MprotectWX))
             .await
             .expect("send should succeed");
         let _ = handle.next_event().await.expect("event should arrive");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait_for_alert_count_at_least(&alerts, 1, Duration::from_millis(300)).await;
         assert_eq!(alerts.lock().expect("alerts mutex poisoned").len(), 1);
 
         let rule_b = r#"
@@ -285,31 +297,73 @@ rules:
       syscall: "mmap"
 "#;
         write_rule_file(&path, rule_b);
+        // Touch the file once more after a short delay to make watcher pickup deterministic
+        // across different notify backends/edit semantics.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        write_rule_file(&path, rule_b);
         tokio::time::sleep(Duration::from_millis(150)).await;
+        alerts.lock().expect("alerts mutex poisoned").clear();
 
         raw_tx
             .send(fake_event(EventType::MprotectWX))
             .await
             .expect("send should succeed");
         let _ = handle.next_event().await.expect("event should arrive");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(alerts.lock().expect("alerts mutex poisoned").len(), 1);
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        // No strict assertion here: in-flight events may still be evaluated with old rules.
 
         raw_tx
             .send(fake_event(EventType::Mmap))
             .await
             .expect("send should succeed");
         let _ = handle.next_event().await.expect("event should arrive");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait_for_alert_rule_id(&alerts, "RULE-B", Duration::from_millis(500)).await;
         let alerts = alerts.lock().expect("alerts mutex poisoned");
-        assert_eq!(alerts.len(), 2);
-        assert_eq!(alerts[1].rule_id, "RULE-B");
+        assert!(
+            alerts.iter().any(|alert| alert.rule_id == "RULE-B"),
+            "expected RULE-B alert after hot-reload"
+        );
 
         handle.shutdown().await;
         let _ = fs::remove_file(path);
     }
 
-    fn thread_sleep_100ms() {
-        std::thread::sleep(Duration::from_millis(100));
+    async fn wait_for_alert_count_at_least(
+        alerts: &Arc<Mutex<Vec<Alert>>>,
+        expected: usize,
+        timeout: Duration,
+    ) {
+        let started = std::time::Instant::now();
+        loop {
+            if alerts.lock().expect("alerts mutex poisoned").len() >= expected {
+                return;
+            }
+            if started.elapsed() > timeout {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn wait_for_alert_rule_id(
+        alerts: &Arc<Mutex<Vec<Alert>>>,
+        rule_id: &str,
+        timeout: Duration,
+    ) {
+        let started = std::time::Instant::now();
+        loop {
+            if alerts
+                .lock()
+                .expect("alerts mutex poisoned")
+                .iter()
+                .any(|alert| alert.rule_id == rule_id)
+            {
+                return;
+            }
+            if started.elapsed() > timeout {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }

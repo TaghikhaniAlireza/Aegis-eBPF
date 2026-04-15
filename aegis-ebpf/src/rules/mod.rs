@@ -1,6 +1,5 @@
 pub mod loader;
 pub mod watcher;
-pub mod watcher;
 
 use std::{error::Error, fmt};
 
@@ -471,3 +470,4 @@ rules:
         assert!(logs.contains("MEM-T1"), "expected matched rule id in logs");
     }
 }
+

@@ -52,6 +52,8 @@ impl Eq for EnrichedEvent {}
 pub struct PipelineHandle {
     ordered_rx: mpsc::Receiver<EnrichedEvent>,
     shutdown_tx: oneshot::Sender<()>,
+    #[allow(dead_code)]
+    rules: Option<PipelineRules>,
 }
 
 #[derive(Debug)]
@@ -70,14 +72,6 @@ impl fmt::Display for PipelineError {
 }
 
 impl Error for PipelineError {}
-
-fn load_rules(config: &config::PipelineConfig) -> Result<Arc<RuleSet>, PipelineError> {
-    if let Some(path) = &config.rules_path {
-        let loaded = RuleSet::from_file(path).map_err(PipelineError::RuleLoadFailed)?;
-        return Ok(Arc::new(loaded));
-    }
-    Ok(Arc::new(RuleSet::default()))
-}
 
 enum PipelineRules {
     Static(Arc<ArcSwap<RuleSet>>),
@@ -123,6 +117,7 @@ pub async fn start_pipeline(
         pipeline_config,
         enricher,
         rules.current(),
+        Some(rules),
     ))
 }
 
@@ -138,7 +133,18 @@ pub(crate) fn start_pipeline_from_receiver_for_tests(
         pipeline_config,
         enricher,
         rules.current(),
+        Some(rules),
     ))
+}
+
+#[cfg(test)]
+pub(crate) fn start_pipeline_from_receiver_for_tests_with_rules(
+    raw_rx: mpsc::Receiver<MemoryEvent>,
+    pipeline_config: config::PipelineConfig,
+    enricher: Arc<dyn ContextEnricher>,
+    rules: Arc<ArcSwap<RuleSet>>,
+) -> PipelineHandle {
+    spawn_pipeline_from_raw(raw_rx, pipeline_config, enricher, rules, None)
 }
 
 fn spawn_pipeline_from_raw(
@@ -146,6 +152,7 @@ fn spawn_pipeline_from_raw(
     pipeline_config: config::PipelineConfig,
     enricher: Arc<dyn ContextEnricher>,
     rules: Arc<ArcSwap<RuleSet>>,
+    keep_rules: Option<PipelineRules>,
 ) -> PipelineHandle {
     assert!(
         pipeline_config.partition_count.is_power_of_two(),
@@ -177,6 +184,7 @@ fn spawn_pipeline_from_raw(
     PipelineHandle {
         ordered_rx: final_rx,
         shutdown_tx,
+        rules: keep_rules,
     }
 }
 
