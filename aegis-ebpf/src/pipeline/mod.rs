@@ -99,6 +99,7 @@ pub async fn start_pipeline(
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn start_pipeline_from_receiver_for_tests(
     raw_rx: mpsc::Receiver<MemoryEvent>,
     pipeline_config: config::PipelineConfig,
