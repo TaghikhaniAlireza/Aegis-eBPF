@@ -7,7 +7,7 @@ use aegis_ebpf_common::EventType;
 use regex::Regex;
 use serde::Deserialize;
 
-use crate::pipeline::EnrichedEvent;
+use crate::{pipeline::EnrichedEvent, state::ProcessState};
 
 pub const PROT_READ: u64 = 0x1;
 pub const PROT_WRITE: u64 = 0x2;
@@ -21,6 +21,8 @@ pub struct Rule {
     pub severity: Severity,
     pub description: String,
     pub conditions: Conditions,
+    #[serde(default)]
+    pub stateful: Option<StatefulConditions>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -43,6 +45,13 @@ pub struct Conditions {
     pub cgroup_pattern: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct StatefulConditions {
+    pub min_event_count: Option<usize>,
+    pub min_mprotect_exec_count: Option<usize>,
+    pub min_rwx_bytes: Option<u64>,
+}
+
 #[derive(Debug)]
 pub enum RuleError {
     IoError(std::io::Error),
@@ -52,6 +61,10 @@ pub enum RuleError {
 
 impl Rule {
     pub fn matches(&self, event: &EnrichedEvent) -> bool {
+        self.matches_with_state(event, None)
+    }
+
+    pub fn matches_with_state(&self, event: &EnrichedEvent, state: Option<&ProcessState>) -> bool {
         if let Some(expected) = self.conditions.syscall.as_deref()
             && !expected.eq_ignore_ascii_case(event_syscall_name(event))
         {
@@ -95,6 +108,27 @@ impl Rule {
             }
         }
 
+        if let Some(stateful) = &self.stateful {
+            let Some(state) = state else {
+                return false;
+            };
+            if let Some(min_event_count) = stateful.min_event_count
+                && state.event_count < min_event_count
+            {
+                return false;
+            }
+            if let Some(min_mprotect_exec_count) = stateful.min_mprotect_exec_count
+                && state.mprotect_exec_count < min_mprotect_exec_count
+            {
+                return false;
+            }
+            if let Some(min_rwx_bytes) = stateful.min_rwx_bytes
+                && state.total_rwx_bytes < min_rwx_bytes
+            {
+                return false;
+            }
+        }
+
         true
     }
 }
@@ -125,10 +159,14 @@ impl From<serde_yaml::Error> for RuleError {
 
 pub(crate) fn validate_rule(rule: &Rule) -> Result<(), RuleError> {
     if rule.id.trim().is_empty() {
-        return Err(RuleError::InvalidCondition("rule id cannot be empty".into()));
+        return Err(RuleError::InvalidCondition(
+            "rule id cannot be empty".into(),
+        ));
     }
     if rule.name.trim().is_empty() {
-        return Err(RuleError::InvalidCondition("rule name cannot be empty".into()));
+        return Err(RuleError::InvalidCondition(
+            "rule name cannot be empty".into(),
+        ));
     }
 
     if let Some(syscall) = rule.conditions.syscall.as_deref()
@@ -210,8 +248,7 @@ fn flag_bit(name: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use std::{
-        fs,
-        io,
+        fs, io,
         sync::{Arc, Mutex},
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -221,7 +258,7 @@ mod tests {
     use tracing_subscriber::fmt::MakeWriter;
 
     use super::{loader::RuleSet, *};
-    use crate::{pipeline, NoopEnricher, PipelineConfig};
+    use crate::{NoopEnricher, PipelineConfig, pipeline};
 
     fn fake_enriched_event(event_type: EventType, flags: u64, len: u64) -> crate::EnrichedEvent {
         crate::EnrichedEvent {
@@ -270,6 +307,7 @@ rules:
                 syscall: Some("mprotect".into()),
                 ..Default::default()
             },
+            stateful: None,
         };
         let mprotect_event = fake_enriched_event(EventType::MprotectWX, 0, 4096);
         let mmap_event = fake_enriched_event(EventType::Mmap, 0, 4096);
@@ -288,6 +326,7 @@ rules:
                 flags_contains: vec!["PROT_EXEC".into(), "PROT_WRITE".into()],
                 ..Default::default()
             },
+            stateful: None,
         };
 
         let match_event = fake_enriched_event(
@@ -311,6 +350,7 @@ rules:
                 flags_excludes: vec!["MAP_FILE".into()],
                 ..Default::default()
             },
+            stateful: None,
         };
 
         let anonymous = fake_enriched_event(EventType::Mmap, MAP_ANONYMOUS | PROT_EXEC, 4096);
@@ -332,6 +372,7 @@ rules:
                         syscall: Some("mmap".into()),
                         ..Default::default()
                     },
+                    stateful: None,
                 },
                 Rule {
                     id: "R2".into(),
@@ -342,6 +383,7 @@ rules:
                         syscall: Some("mprotect".into()),
                         ..Default::default()
                     },
+                    stateful: None,
                 },
                 Rule {
                     id: "R3".into(),
@@ -352,12 +394,13 @@ rules:
                         flags_contains: vec!["PROT_EXEC".into()],
                         ..Default::default()
                     },
+                    stateful: None,
                 },
             ],
         };
 
         let event = fake_enriched_event(EventType::Mmap, PROT_EXEC, 4096);
-        let matches = set.evaluate(&event);
+        let matches = set.evaluate(&event, None);
         let ids: Vec<&str> = matches.iter().map(|rule| rule.id.as_str()).collect();
         assert_eq!(ids, vec!["R1", "R3"]);
     }
@@ -366,7 +409,7 @@ rules:
     fn empty_rule_set() {
         let set = RuleSet::default();
         let event = fake_enriched_event(EventType::Mmap, PROT_EXEC, 4096);
-        assert!(set.evaluate(&event).is_empty());
+        assert!(set.evaluate(&event, None).is_empty());
     }
 
     #[derive(Clone)]
@@ -457,12 +500,8 @@ rules:
         handle.shutdown().await;
         let _ = fs::remove_file(path);
 
-        let logs = String::from_utf8(
-            logs.lock()
-                .expect("log buffer mutex poisoned")
-                .clone(),
-        )
-        .expect("logs should be valid utf-8");
+        let logs = String::from_utf8(logs.lock().expect("log buffer mutex poisoned").clone())
+            .expect("logs should be valid utf-8");
         assert!(
             logs.contains("Rule match detected"),
             "expected rule-match warning in logs"
@@ -470,4 +509,3 @@ rules:
         assert!(logs.contains("MEM-T1"), "expected matched rule id in logs");
     }
 }
-

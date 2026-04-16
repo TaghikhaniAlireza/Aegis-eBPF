@@ -15,3 +15,13 @@ rules:
       syscall: "mmap"
       flags_contains: ["PROT_EXEC"]
       flags_excludes: ["MAP_FILE"]
+
+  - id: "MEM-003"
+    name: "Repeated mprotect PROT_EXEC"
+    severity: "high"
+    description: "Process repeatedly marks memory executable"
+    conditions:
+      syscall: "mprotect"
+      flags_contains: ["PROT_EXEC"]
+    stateful:
+      min_mprotect_exec_count: 5

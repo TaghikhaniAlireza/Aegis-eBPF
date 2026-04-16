@@ -8,16 +8,18 @@ use std::{
 };
 
 use aegis_ebpf_common::MemoryEvent;
+use arc_swap::ArcSwap;
 use log::warn;
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn as tracing_warn;
 
 use crate::{
+    ContextEnricher, PodMetadata, SensorConfig,
     alert::{Alert, AlertCallback},
     rules::{RuleError, loader::RuleSet, watcher::RuleWatcher},
-    start_sensor, ContextEnricher, PodMetadata, SensorConfig,
+    start_sensor,
+    state::StateTracker,
 };
-use arc_swap::ArcSwap;
 
 pub mod config;
 
@@ -165,7 +167,12 @@ fn spawn_pipeline_from_raw(
     let (final_tx, final_rx) = mpsc::channel(channel_buffer_size);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    tokio::spawn(run_enrichment_worker(raw_rx, enriched_tx, enricher, shutdown_rx));
+    tokio::spawn(run_enrichment_worker(
+        raw_rx,
+        enriched_tx,
+        enricher,
+        shutdown_rx,
+    ));
     tokio::spawn(run_reorder_task(
         enriched_rx,
         ordered_tx,
@@ -179,6 +186,7 @@ fn spawn_pipeline_from_raw(
         channel_buffer_size,
         rules,
         pipeline_config.on_alert,
+        pipeline_config.state_window_ms,
     ));
 
     PipelineHandle {
@@ -331,10 +339,17 @@ async fn run_partition_worker(
     merge_tx: mpsc::Sender<EnrichedEvent>,
     rules: Arc<ArcSwap<RuleSet>>,
     on_alert: Option<AlertCallback>,
+    state_window_ms: u64,
 ) {
+    let mut state_tracker = StateTracker::new(state_window_ms);
+
     while let Some(event) = rx.recv().await {
+        state_tracker.update(&event);
+        state_tracker.expire_old(event.inner.timestamp_ns);
+        let state = state_tracker.get(event.inner.tgid);
+
         let current_rules = rules.load();
-        let matches = current_rules.evaluate(&event);
+        let matches = current_rules.evaluate(&event, state);
         for rule in &matches {
             tracing_warn!(
                 tgid = event.inner.tgid,
@@ -359,6 +374,7 @@ async fn run_partition_router(
     partition_buffer_size: usize,
     rules: Arc<ArcSwap<RuleSet>>,
     on_alert: Option<AlertCallback>,
+    state_window_ms: u64,
 ) {
     let mut partition_txs = Vec::with_capacity(partition_count);
     let mut worker_handles = Vec::with_capacity(partition_count);
@@ -371,6 +387,7 @@ async fn run_partition_router(
             final_tx.clone(),
             Arc::clone(&rules),
             on_alert.clone(),
+            state_window_ms,
         )));
     }
     drop(final_tx);
@@ -412,8 +429,8 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        config, route_partition_index, start_pipeline_from_receiver_for_tests, EnrichedEvent,
-        PipelineHandle,
+        EnrichedEvent, PipelineHandle, config, route_partition_index,
+        start_pipeline_from_receiver_for_tests,
     };
     use crate::{ContextEnricher, NoopEnricher, PodMetadata};
 
@@ -521,7 +538,10 @@ mod tests {
         assert!(received.iter().all(|event| event.metadata.is_none()));
 
         let pending = tokio::time::timeout(Duration::from_millis(50), handle.next_event()).await;
-        assert!(pending.is_err(), "channel should stay open without immediate close");
+        assert!(
+            pending.is_err(),
+            "channel should stay open without immediate close"
+        );
     }
 
     #[tokio::test]
@@ -630,7 +650,9 @@ mod tests {
         handle.shutdown().await;
 
         let mut out = Vec::new();
-        while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
             out.push(event.inner.timestamp_ns);
             if out.len() == 3 {
                 break;
@@ -738,7 +760,9 @@ mod tests {
         handle.shutdown().await;
 
         let mut counts: HashMap<u32, usize> = HashMap::new();
-        while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
             *counts.entry(event.inner.tgid).or_insert(0usize) += 1;
             if counts.values().sum::<usize>() == 8 {
                 break;

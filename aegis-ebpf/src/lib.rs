@@ -6,23 +6,25 @@ use std::{
     time::Duration,
 };
 
+pub mod alert;
 pub mod enrichment;
 pub mod pipeline;
 pub mod rules;
-pub mod alert;
-pub use alert::{Alert, AlertCallback};
-pub use enrichment::{ContextEnricher, NoopEnricher, PodMetadata};
-pub use pipeline::config::PipelineConfig;
-pub use pipeline::{EnrichedEvent, PipelineError, PipelineHandle, start_pipeline};
-
+pub mod state;
 use aegis_ebpf_common::MemoryEvent;
+pub use alert::{Alert, AlertCallback};
 use anyhow::Context as _;
 use aya::{
     Btf, Ebpf, EbpfLoader, Endianness,
     maps::{HashMap, RingBuf},
     programs::TracePoint,
 };
+pub use enrichment::{ContextEnricher, NoopEnricher, PodMetadata};
 use log::{debug, warn};
+pub use pipeline::{
+    EnrichedEvent, PipelineError, PipelineHandle, config::PipelineConfig, start_pipeline,
+};
+pub use state::{ProcessState, StateTracker};
 use tokio::sync::mpsc;
 
 pub struct SensorConfig {
@@ -152,7 +154,9 @@ async fn load_ebpf() -> anyhow::Result<Ebpf> {
     if let Some(btf) = load_btf().await? {
         let mut loader = EbpfLoader::new();
         loader.btf(Some(&btf));
-        return loader.load(bytes).context("failed to load eBPF with fallback BTF");
+        return loader
+            .load(bytes)
+            .context("failed to load eBPF with fallback BTF");
     }
     Ebpf::load(bytes).context("failed to load eBPF program bytes")
 }
@@ -199,7 +203,9 @@ async fn load_btf() -> Result<Option<Btf>, anyhow::Error> {
         .status()
         .context("failed to extract downloaded BTF archive with tar")?;
     if !status.success() {
-        return Err(anyhow::anyhow!("tar extraction failed with status {status}"));
+        return Err(anyhow::anyhow!(
+            "tar extraction failed with status {status}"
+        ));
     }
 
     let btf_file = find_btf_file(temp_dir.path())
@@ -221,7 +227,8 @@ fn uname_release() -> anyhow::Result<String> {
 }
 
 fn distro_and_version() -> anyhow::Result<(String, String)> {
-    let content = fs::read_to_string("/etc/os-release").context("reading /etc/os-release failed")?;
+    let content =
+        fs::read_to_string("/etc/os-release").context("reading /etc/os-release failed")?;
     let id = parse_os_release_field(&content, "ID")
         .ok_or_else(|| anyhow::anyhow!("ID not found in /etc/os-release"))?;
     let version = parse_os_release_field(&content, "VERSION_ID")

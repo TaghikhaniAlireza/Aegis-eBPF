@@ -8,6 +8,7 @@ pub struct PipelineConfig {
     pub reorder_window_ms: u64,
     pub reorder_heap_capacity: usize,
     pub partition_count: usize,
+    pub state_window_ms: u64,
     pub rules_path: Option<PathBuf>,
     pub on_alert: Option<AlertCallback>,
 }
@@ -19,6 +20,7 @@ impl Default for PipelineConfig {
             reorder_window_ms: 50,
             reorder_heap_capacity: 1024,
             partition_count: 4,
+            state_window_ms: 60_000,
             rules_path: None,
             on_alert: None,
         }

@@ -6,7 +6,7 @@ use std::{
 use serde::Deserialize;
 
 use super::{Rule, RuleError, validate_rule};
-use crate::pipeline::EnrichedEvent;
+use crate::{pipeline::EnrichedEvent, state::ProcessState};
 
 #[derive(Clone, Debug, Default)]
 pub struct RuleSet {
@@ -45,8 +45,11 @@ impl RuleSet {
         Ok(Self { rules })
     }
 
-    pub fn evaluate(&self, event: &EnrichedEvent) -> Vec<&Rule> {
-        self.rules.iter().filter(|rule| rule.matches(event)).collect()
+    pub fn evaluate(&self, event: &EnrichedEvent, state: Option<&ProcessState>) -> Vec<&Rule> {
+        self.rules
+            .iter()
+            .filter(|rule| rule.matches_with_state(event, state))
+            .collect()
     }
 
     pub fn from_yaml_str(yaml: &str) -> Result<Self, RuleError> {
@@ -54,7 +57,9 @@ impl RuleSet {
         for rule in &parsed.rules {
             validate_rule(rule)?;
         }
-        Ok(Self { rules: parsed.rules })
+        Ok(Self {
+            rules: parsed.rules,
+        })
     }
 
     pub fn empty() -> Self {
