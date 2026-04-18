@@ -9,7 +9,7 @@ use aegis_ebpf_common::MemoryEvent;
 use log::warn;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{start_sensor, ContextEnricher, PodMetadata, SensorConfig};
+use crate::{ContextEnricher, PodMetadata, SensorConfig, start_sensor};
 
 pub mod config;
 
@@ -57,11 +57,7 @@ pub async fn start_pipeline(
     );
 
     let raw_rx = start_sensor(sensor_config).await?;
-    Ok(spawn_pipeline_from_raw(
-        raw_rx,
-        pipeline_config,
-        enricher,
-    ))
+    Ok(spawn_pipeline_from_raw(raw_rx, pipeline_config, enricher))
 }
 
 fn spawn_pipeline_from_raw(
@@ -80,7 +76,12 @@ fn spawn_pipeline_from_raw(
     let (final_tx, final_rx) = mpsc::channel(channel_buffer_size);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    tokio::spawn(run_enrichment_worker(raw_rx, enriched_tx, enricher, shutdown_rx));
+    tokio::spawn(run_enrichment_worker(
+        raw_rx,
+        enriched_tx,
+        enricher,
+        shutdown_rx,
+    ));
     tokio::spawn(run_reorder_task(
         enriched_rx,
         ordered_tx,
@@ -169,7 +170,7 @@ async fn run_reorder_task(
 ) {
     let mut heap: BinaryHeap<Reverse<EnrichedEvent>> = BinaryHeap::new();
     let mut deadline: Option<Instant> = None;
-    let effective_capacity = reorder_heap_capacity.min(HEAP_CAPACITY_LIMIT).max(1);
+    let effective_capacity = reorder_heap_capacity.clamp(1, HEAP_CAPACITY_LIMIT);
 
     loop {
         if let Some(deadline_at) = deadline {
@@ -299,7 +300,9 @@ mod tests {
     use async_trait::async_trait;
     use tokio::sync::mpsc;
 
-    use super::{config, route_partition_index, spawn_pipeline_from_raw, EnrichedEvent, PipelineHandle};
+    use super::{
+        EnrichedEvent, PipelineHandle, config, route_partition_index, spawn_pipeline_from_raw,
+    };
     use crate::{ContextEnricher, NoopEnricher, PodMetadata};
 
     fn fake_event(timestamp_ns: u64, tgid: u32, pid: u32) -> MemoryEvent {
@@ -400,7 +403,10 @@ mod tests {
         assert!(received.iter().all(|event| event.metadata.is_none()));
 
         let pending = tokio::time::timeout(Duration::from_millis(50), handle.next_event()).await;
-        assert!(pending.is_err(), "channel should stay open without immediate close");
+        assert!(
+            pending.is_err(),
+            "channel should stay open without immediate close"
+        );
     }
 
     #[tokio::test]
@@ -509,7 +515,9 @@ mod tests {
         handle.shutdown().await;
 
         let mut out = Vec::new();
-        while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
             out.push(event.inner.timestamp_ns);
             if out.len() == 3 {
                 break;
@@ -617,7 +625,9 @@ mod tests {
         handle.shutdown().await;
 
         let mut counts: HashMap<u32, usize> = HashMap::new();
-        while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
             *counts.entry(event.inner.tgid).or_insert(0usize) += 1;
             if counts.values().sum::<usize>() == 8 {
                 break;

@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if, clippy::manual_clamp)]
+
 use std::{
     convert::TryFrom as _,
     fs,

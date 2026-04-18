@@ -1,6 +1,6 @@
 use std::{convert::TryFrom, fmt};
 
-use aegis_ebpf_common::{EventType, MemoryEvent, MemorySyscall, SYSCALL_ARG_COUNT, TASK_COMM_LEN};
+use aegis_ebpf_common::{EventType, MemoryEvent, MemorySyscall, SYSCALL_ARG_COUNT};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -273,11 +273,11 @@ mod tests {
 
     #[test]
     fn test_calert_layout() {
-        // C equivalent: sizeof(CAlert) must equal 216
+        // C equivalent: sizeof(CAlert) must equal 224
         // uint8_t rule_id[64] (64) + uint8_t rule_name[128] (128) + uint8_t severity (1)
         // + uint8_t _pad0[3] (3) + uint32_t tgid (4) + uint32_t _pad1 (4)
-        // + uint64_t cgroup_id (8) + uint64_t triggered_at_ns (8) = 216
-        assert_eq!(size_of::<CAlert>(), 216);
+        // + uint64_t cgroup_id (8) + uint64_t triggered_at_ns (8) + trailing padding (8) = 224
+        assert_eq!(size_of::<CAlert>(), 224);
         assert_eq!(align_of::<CAlert>(), 8);
 
         assert_eq!(offset_of!(CAlert, rule_id), 0);
@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(offset_of!(CAlert, tgid), 196);
         assert_eq!(offset_of!(CAlert, _pad1), 200);
         assert_eq!(offset_of!(CAlert, cgroup_id), 208);
-        assert_eq!(offset_of!(CAlert, triggered_at_ns), 216 - 8);
+        assert_eq!(offset_of!(CAlert, triggered_at_ns), 216);
     }
 
     #[test]
@@ -351,8 +351,8 @@ mod layout_assertions {
 
     #[test]
     fn verify_calert_layout() {
-        // C equivalent: sizeof(CAlert) must equal 216
-        assert_eq!(size_of::<CAlert>(), 216);
+        // C equivalent: sizeof(CAlert) must equal 224
+        assert_eq!(size_of::<CAlert>(), 224);
         assert_eq!(align_of::<CAlert>(), 8);
         assert_eq!(offset_of!(CAlert, rule_id), 0);
         assert_eq!(offset_of!(CAlert, rule_name), 64);
@@ -361,6 +361,6 @@ mod layout_assertions {
         assert_eq!(offset_of!(CAlert, tgid), 196);
         assert_eq!(offset_of!(CAlert, _pad1), 200);
         assert_eq!(offset_of!(CAlert, cgroup_id), 208);
-        assert_eq!(offset_of!(CAlert, triggered_at_ns), 216 - 8);
+        assert_eq!(offset_of!(CAlert, triggered_at_ns), 216);
     }
 }
