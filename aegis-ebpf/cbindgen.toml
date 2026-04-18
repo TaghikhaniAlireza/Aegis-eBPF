@@ -1,0 +1,13 @@
+language = "C"
+include_guard = "AEGIS_SENSOR_H"
+tab_width = 4
+documentation = true
+documentation_style = "c99"
+
+[export]
+include = ["RawMemoryEvent", "CAlert", "CSeverity"]
+
+[layout]
+# Ensure cbindgen emits static_assert for size and alignment
+# so the generated header self-validates when compiled by C/C++
+# (requires cbindgen >= 0.26)
