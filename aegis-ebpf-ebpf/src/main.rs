@@ -26,8 +26,7 @@ static pending_syscalls: LruHashMap<u64, MemoryEvent> =
     LruHashMap::with_max_entries(PENDING_SYSCALLS_MAX_ENTRIES, 0);
 
 #[map]
-static ALLOWLIST: LruHashMap<u32, u8> =
-    LruHashMap::with_max_entries(ALLOWLIST_MAX_ENTRIES, 0);
+static ALLOWLIST: LruHashMap<u32, u8> = LruHashMap::with_max_entries(ALLOWLIST_MAX_ENTRIES, 0);
 
 #[map]
 static RATE_LIMIT_LAST_TS: LruHashMap<u32, u64> =

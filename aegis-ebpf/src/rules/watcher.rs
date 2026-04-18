@@ -118,7 +118,8 @@ fn should_reload(event: &Event, configured_path: &Path) -> bool {
     event.paths.iter().any(|path| {
         path == configured_path
             || parent.is_some_and(|dir| path == dir)
-            || file_name.is_some_and(|name| path.file_name().is_some_and(|candidate| candidate == name))
+            || file_name
+                .is_some_and(|name| path.file_name().is_some_and(|candidate| candidate == name))
     })
 }
 

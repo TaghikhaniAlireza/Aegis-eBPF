@@ -12,14 +12,12 @@ Manual testing in a real Kubernetes environment:
    - Example expected shape: Some(PodMetadata { pod_name: "...", namespace: "...", node_name: "..." })
 */
 
+use std::{future::Future, time::Duration};
+
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::Pod;
-use kube::{
-    Api, Client,
-    api::ListParams,
-};
+use kube::{Api, Client, api::ListParams};
 use moka::sync::Cache;
-use std::{future::Future, time::Duration};
 
 use crate::{ContextEnricher, PodMetadata};
 
@@ -102,16 +100,16 @@ impl ContextEnricher for KubernetesEnricher {
 
 #[cfg(test)]
 mod tests {
-    use async_trait::async_trait;
-    use moka::sync::Cache;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
 
-    use crate::{ContextEnricher, PodMetadata};
+    use async_trait::async_trait;
+    use moka::sync::Cache;
 
     use super::{KubernetesEnricher, enrich_with_cache};
+    use crate::{ContextEnricher, PodMetadata};
 
     fn assert_context_enricher<T: ContextEnricher>() {}
 

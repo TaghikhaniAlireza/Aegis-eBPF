@@ -113,8 +113,9 @@ mod tests {
             reorder_window_ms: 1,
             ..PipelineConfig::default()
         };
-        let mut handle = start_pipeline_from_receiver_for_tests(raw_rx, cfg, Arc::new(NoopEnricher))
-            .expect("pipeline should start");
+        let mut handle =
+            start_pipeline_from_receiver_for_tests(raw_rx, cfg, Arc::new(NoopEnricher))
+                .expect("pipeline should start");
 
         raw_tx.send(event).await.expect("send should succeed");
         let _ = handle.next_event().await.expect("event should arrive");
@@ -160,7 +161,8 @@ rules:
       flags_contains: ["PROT_EXEC"]
 "#;
         let (alerts, callback) = callback_sink();
-        run_single_event_through_pipeline(yaml, fake_event(EventType::Mmap, 0), Some(callback)).await;
+        run_single_event_through_pipeline(yaml, fake_event(EventType::Mmap, 0), Some(callback))
+            .await;
 
         let alerts = alerts.lock().expect("alert sink mutex poisoned");
         assert!(alerts.is_empty());
