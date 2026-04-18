@@ -8,10 +8,14 @@ use std::{
     time::Duration,
 };
 
+pub mod alert;
 pub mod enrichment;
 pub mod ffi;
 pub mod pipeline;
+pub mod rules;
+pub mod state;
 use aegis_ebpf_common::MemoryEvent;
+pub use alert::{Alert, AlertCallback};
 use anyhow::Context as _;
 use aya::{
     Btf, Ebpf, EbpfLoader, Endianness,
@@ -20,7 +24,10 @@ use aya::{
 };
 pub use enrichment::{ContextEnricher, NoopEnricher, PodMetadata};
 use log::{debug, warn};
-pub use pipeline::{EnrichedEvent, PipelineHandle, config::PipelineConfig, start_pipeline};
+pub use pipeline::{
+    EnrichedEvent, PipelineError, PipelineHandle, config::PipelineConfig, start_pipeline,
+};
+pub use state::{ProcessState, StateTracker};
 use tokio::sync::mpsc;
 
 pub struct SensorConfig {

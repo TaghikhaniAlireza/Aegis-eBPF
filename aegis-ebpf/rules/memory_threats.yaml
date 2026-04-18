@@ -1,0 +1,27 @@
+rules:
+  - id: "MEM-001"
+    name: "W^X Transition Detected"
+    severity: "high"
+    description: "Process attempted to make writable memory executable"
+    conditions:
+      syscall: "mprotect"
+      flags_contains: ["PROT_EXEC", "PROT_WRITE"]
+
+  - id: "MEM-002"
+    name: "Anonymous Executable Mapping"
+    severity: "medium"
+    description: "Process created anonymous executable memory region"
+    conditions:
+      syscall: "mmap"
+      flags_contains: ["PROT_EXEC"]
+      flags_excludes: ["MAP_FILE"]
+
+  - id: "MEM-003"
+    name: "Repeated mprotect PROT_EXEC"
+    severity: "high"
+    description: "Process repeatedly marks memory executable"
+    conditions:
+      syscall: "mprotect"
+      flags_contains: ["PROT_EXEC"]
+    stateful:
+      min_mprotect_exec_count: 5
