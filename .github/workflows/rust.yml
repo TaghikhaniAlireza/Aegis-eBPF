@@ -50,19 +50,19 @@ jobs:
         path: target
         key: ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}
     
-    - name: Install LLVM 20
+    - name: Install eBPF dependencies
       run: |
-        wget https://apt.llvm.org/llvm.sh
-        chmod +x llvm.sh
-        sudo ./llvm.sh 20
+        sudo apt-get update
         sudo apt-get install -y \
+          llvm \
+          clang \
           libelf-dev \
           linux-headers-$(uname -r) \
           pkg-config \
           build-essential
     
-    - name: Install bpf-linker
-      run: cargo install bpf-linker --version 0.10.3 --features llvm-20
+    - name: Install bpf-linker (without LLVM feature)
+      run: cargo install bpf-linker --version 0.10.3 --no-default-features
     
     - name: Check formatting
       run: cargo fmt --all -- --check
@@ -107,18 +107,18 @@ jobs:
       with:
         components: rust-src
     
-    - name: Install LLVM 20
+    - name: Install dependencies
       run: |
-        wget https://apt.llvm.org/llvm.sh
-        chmod +x llvm.sh
-        sudo ./llvm.sh 20
+        sudo apt-get update
         sudo apt-get install -y \
+          llvm \
+          clang \
           libelf-dev \
           linux-headers-$(uname -r) \
           build-essential
     
     - name: Install bpf-linker
-      run: cargo install bpf-linker --version 0.10.3 --features llvm-20
+      run: cargo install bpf-linker --version 0.10.3 --no-default-features
     
     - name: Build eBPF programs
       run: cargo xtask build-ebpf --release || true
@@ -168,15 +168,13 @@ jobs:
       with:
         components: rust-src
     
-    - name: Install LLVM 20
+    - name: Install dependencies
       run: |
-        wget https://apt.llvm.org/llvm.sh
-        chmod +x llvm.sh
-        sudo ./llvm.sh 20
-        sudo apt-get install -y libelf-dev linux-headers-$(uname -r)
+        sudo apt-get update
+        sudo apt-get install -y llvm clang libelf-dev linux-headers-$(uname -r)
     
     - name: Install bpf-linker
-      run: cargo install bpf-linker --version 0.10.3 --features llvm-20
+      run: cargo install bpf-linker --version 0.10.3 --no-default-features
     
     - name: Build eBPF programs
       run: cargo xtask build-ebpf --release || true
@@ -226,15 +224,13 @@ jobs:
       with:
         components: rust-src
     
-    - name: Install LLVM 20
+    - name: Install dependencies
       run: |
-        wget https://apt.llvm.org/llvm.sh
-        chmod +x llvm.sh
-        sudo ./llvm.sh 20
-        sudo apt-get install -y libelf-dev linux-headers-$(uname -r)
+        sudo apt-get update
+        sudo apt-get install -y llvm clang libelf-dev linux-headers-$(uname -r)
     
     - name: Install bpf-linker
-      run: cargo install bpf-linker --version 0.10.3 --features llvm-20
+      run: cargo install bpf-linker --version 0.10.3 --no-default-features
     
     - name: Build eBPF programs
       run: cargo xtask build-ebpf --release || true
