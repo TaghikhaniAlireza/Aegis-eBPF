@@ -30,7 +30,7 @@ jobs:
     - name: Install nightly Rust (for eBPF)
       uses: dtolnay/rust-toolchain@nightly
       with:
-        components: rust-src
+        components: rust-src, rustfmt
     
     - name: Cache cargo registry
       uses: actions/cache@v4
@@ -75,7 +75,7 @@ jobs:
         LLVM_SYS_190_PREFIX: /usr/lib/llvm-19
     
     - name: Check formatting
-      run: cargo fmt --all -- --check
+      run: cargo +nightly fmt --all -- --check
     
     - name: Run clippy (skip eBPF crate)
       run: cargo clippy --workspace --exclude aegis-ebpf-ebpf --all-features --all-targets -- -D warnings || true
@@ -131,7 +131,7 @@ jobs:
         sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-19 100
     
     - name: Install bpf-linker
-      run: cargo install bpf-linker --version 0.10.3 --features llvm-19
+      run: cargo install bpf-linker --version 0.10.3
       env:
         LLVM_SYS_190_PREFIX: /usr/lib/llvm-19
     
@@ -190,7 +190,7 @@ jobs:
         sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-19 100
     
     - name: Install bpf-linker
-      run: cargo install bpf-linker --version 0.10.3 --features llvm-19
+      run: cargo install bpf-linker --version 0.10.3
       env:
         LLVM_SYS_190_PREFIX: /usr/lib/llvm-19
     
@@ -249,7 +249,7 @@ jobs:
         sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-19 100
     
     - name: Install bpf-linker
-      run: cargo install bpf-linker --version 0.10.3 --features llvm-19
+      run: cargo install bpf-linker --version 0.10.3
       env:
         LLVM_SYS_190_PREFIX: /usr/lib/llvm-19
     
