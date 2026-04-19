@@ -70,7 +70,7 @@ jobs:
     
     - name: Install bpf-linker with LLVM 19
       run: |
-        cargo install bpf-linker --version 0.10.3 --features llvm-19
+        cargo install bpf-linker --version 0.10.3
       env:
         LLVM_SYS_190_PREFIX: /usr/lib/llvm-19
     
