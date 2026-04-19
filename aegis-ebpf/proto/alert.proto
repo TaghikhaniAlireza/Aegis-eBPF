@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package aegis;
 
+option go_package = "github.com/aegis-ebpf/sdk/pkg/aegis/aegisproto";
+
 // Severity level of an alert
 enum Severity {
   SEVERITY_UNSPECIFIED = 0;
