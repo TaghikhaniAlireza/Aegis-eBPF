@@ -60,7 +60,7 @@ impl KernelMemoryEvent {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EventType {
     Mmap = 0,
     MprotectWX = 1,
@@ -127,3 +127,274 @@ impl MemoryEvent {
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for MemoryEvent {}
+
+// ---------------------------------------------------------------------------
+// Unit tests (userspace / `user` feature for `MemoryEvent::from_bytes`)
+// ---------------------------------------------------------------------------
+//
+// Run: `cargo test -p aegis-ebpf-common --features user`
+//
+// ```text
+// mod tests {
+//     memory_syscall_tests   // from_u32 / as_str
+//     event_type_tests       // from_syscall
+//     kernel_memory_event    // from_bytes + golden round-trip + alignment
+//     memory_event           // #[cfg(feature = "user")] field mapping
+// }
+// ```
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serializes a [`KernelMemoryEvent`] to its exact wire layout for golden-byte tests.
+    fn kernel_memory_event_to_bytes(event: &KernelMemoryEvent) -> [u8; core::mem::size_of::<KernelMemoryEvent>()] {
+        let mut out = [0u8; core::mem::size_of::<KernelMemoryEvent>()];
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (event as *const KernelMemoryEvent).cast::<u8>(),
+                out.as_mut_ptr(),
+                out.len(),
+            );
+        }
+        out
+    }
+
+    const fn kernel_event_size() -> usize {
+        core::mem::size_of::<KernelMemoryEvent>()
+    }
+
+    // --- MemorySyscall ---
+
+    /// Validates that `MemorySyscall::from_u32` accepts syscall ids 1–4 and maps them to the expected variants.
+    #[test]
+    fn memory_syscall_from_u32_valid_ids() {
+        assert_eq!(MemorySyscall::from_u32(1), Some(MemorySyscall::Mmap));
+        assert_eq!(MemorySyscall::from_u32(2), Some(MemorySyscall::Mprotect));
+        assert_eq!(MemorySyscall::from_u32(3), Some(MemorySyscall::MemfdCreate));
+        assert_eq!(MemorySyscall::from_u32(4), Some(MemorySyscall::Ptrace));
+    }
+
+    /// Validates that `MemorySyscall::from_u32` returns `None` for out-of-range ids (0, 5, u32::MAX).
+    #[test]
+    fn memory_syscall_from_u32_invalid_ids() {
+        assert_eq!(MemorySyscall::from_u32(0), None);
+        assert_eq!(MemorySyscall::from_u32(5), None);
+        assert_eq!(MemorySyscall::from_u32(u32::MAX), None);
+    }
+
+    /// Validates that `MemorySyscall::as_str` returns stable kernel syscall names for each variant.
+    #[test]
+    fn memory_syscall_as_str() {
+        assert_eq!(MemorySyscall::Mmap.as_str(), "mmap");
+        assert_eq!(MemorySyscall::Mprotect.as_str(), "mprotect");
+        assert_eq!(MemorySyscall::MemfdCreate.as_str(), "memfd_create");
+        assert_eq!(MemorySyscall::Ptrace.as_str(), "ptrace");
+    }
+
+    // --- EventType ---
+
+    /// Validates that `EventType::from_syscall` maps raw syscall ids 1–4 to the high-level event kinds used in userspace.
+    #[test]
+    fn event_type_from_syscall_valid() {
+        assert_eq!(EventType::from_syscall(1), Some(EventType::Mmap));
+        assert_eq!(EventType::from_syscall(2), Some(EventType::MprotectWX));
+        assert_eq!(EventType::from_syscall(3), Some(EventType::MemfdCreate));
+        assert_eq!(EventType::from_syscall(4), Some(EventType::Ptrace));
+    }
+
+    /// Validates that `EventType::from_syscall` returns `None` for unknown syscall ids.
+    #[test]
+    fn event_type_from_syscall_invalid() {
+        assert_eq!(EventType::from_syscall(0), None);
+        assert_eq!(EventType::from_syscall(5), None);
+        assert_eq!(EventType::from_syscall(u32::MAX), None);
+    }
+
+    // --- KernelMemoryEvent::from_bytes ---
+
+    /// Validates that a golden-serialized [`KernelMemoryEvent`] round-trips through `from_bytes` with exact length.
+    #[test]
+    fn kernel_memory_event_from_bytes_exact_size_round_trip() {
+        let original = KernelMemoryEvent {
+            timestamp_ns: 0x1122_3344_5566_7788,
+            pid: 100,
+            tgid: 200,
+            syscall: 2,
+            args: [10, 20, 30, 40, 50, 60],
+            comm: *b"test-comm\0\0\0\0\0\0\0",
+        };
+        let bytes = kernel_memory_event_to_bytes(&original);
+        assert_eq!(bytes.len(), kernel_event_size());
+        let parsed = KernelMemoryEvent::from_bytes(&bytes).expect("exact size should parse");
+        assert_eq!(parsed.timestamp_ns, original.timestamp_ns);
+        assert_eq!(parsed.pid, original.pid);
+        assert_eq!(parsed.tgid, original.tgid);
+        assert_eq!(parsed.syscall, original.syscall);
+        assert_eq!(parsed.args, original.args);
+        assert_eq!(parsed.comm, original.comm);
+    }
+
+    /// Validates that `KernelMemoryEvent::from_bytes` returns `None` when the slice is shorter than the struct.
+    #[test]
+    fn kernel_memory_event_from_bytes_short_slice() {
+        let bytes = [0u8; 4];
+        assert!(KernelMemoryEvent::from_bytes(&bytes).is_none());
+    }
+
+    /// Validates that `KernelMemoryEvent::from_bytes` returns `None` when the slice is longer than the struct.
+    #[test]
+    fn kernel_memory_event_from_bytes_long_slice() {
+        let buf = [0u8; 256];
+        assert!(buf.len() > kernel_event_size());
+        assert!(KernelMemoryEvent::from_bytes(&buf).is_none());
+    }
+
+    /// Validates that `KernelMemoryEvent::from_bytes` accepts a slice whose pointer is not aligned to the struct (unaligned load).
+    #[test]
+    fn kernel_memory_event_from_bytes_unaligned() {
+        let original = KernelMemoryEvent {
+            timestamp_ns: 1,
+            pid: 2,
+            tgid: 3,
+            syscall: 1,
+            args: [0; SYSCALL_ARG_COUNT],
+            comm: [0; TASK_COMM_LEN],
+        };
+        let inner = kernel_memory_event_to_bytes(&original);
+        let mut buf = [0u8; 256];
+        // Place payload at offset 1 so `&buf[1..]` is not 8-byte aligned.
+        buf[1..1 + inner.len()].copy_from_slice(&inner);
+        let slice = &buf[1..1 + inner.len()];
+        assert_ne!(slice.as_ptr() as usize % core::mem::align_of::<KernelMemoryEvent>(), 0);
+        let parsed = KernelMemoryEvent::from_bytes(slice).expect("read_unaligned should succeed");
+        assert_eq!(parsed.timestamp_ns, original.timestamp_ns);
+        assert_eq!(parsed.syscall, original.syscall);
+    }
+
+    /// Validates that `syscall_kind` mirrors `MemorySyscall::from_u32` for the embedded syscall field.
+    #[test]
+    fn kernel_memory_event_syscall_kind() {
+        let ev = KernelMemoryEvent {
+            timestamp_ns: 0,
+            pid: 0,
+            tgid: 0,
+            syscall: 3,
+            args: [0; SYSCALL_ARG_COUNT],
+            comm: [0; TASK_COMM_LEN],
+        };
+        assert_eq!(ev.syscall_kind(), Some(MemorySyscall::MemfdCreate));
+    }
+
+    // --- MemoryEvent::from_bytes (requires `user` feature) ---
+
+    #[cfg(feature = "user")]
+    mod memory_event {
+        use super::*;
+
+        fn raw_with_syscall(syscall: u32, args: [u64; SYSCALL_ARG_COUNT]) -> KernelMemoryEvent {
+            KernelMemoryEvent {
+                timestamp_ns: 9_000,
+                pid: 7,
+                tgid: 42,
+                syscall,
+                args,
+                comm: *b"demo\0\0\0\0\0\0\0\0\0\0\0\0",
+            }
+        }
+
+        /// Validates that mmap syscall maps `args[0]`, `args[1]`, `args[3]` into addr, len, flags.
+        #[test]
+        fn memory_event_mmap_field_mapping() {
+            let raw = raw_with_syscall(1, [0x1000, 0x2000, 0xAAAA, 0x7, 0, 0]);
+            let bytes = super::kernel_memory_event_to_bytes(&raw);
+            let ev = MemoryEvent::from_bytes(&bytes).expect("mmap should parse");
+            assert_eq!(ev.event_type, EventType::Mmap);
+            assert_eq!(ev.addr, 0x1000);
+            assert_eq!(ev.len, 0x2000);
+            assert_eq!(ev.flags, 0x7);
+            assert_eq!(ev.timestamp_ns, raw.timestamp_ns);
+            assert_eq!(ev.tgid, raw.tgid);
+            assert_eq!(ev.pid, raw.pid);
+            assert_eq!(ev.comm, raw.comm);
+            assert_eq!(ev.ret, 0);
+        }
+
+        /// Validates that mprotect-style syscall maps `args[0]`, `args[1]`, `args[2]` into addr, len, flags.
+        #[test]
+        fn memory_event_mprotect_field_mapping() {
+            let raw = raw_with_syscall(2, [0x5000, 0x100, 0x3, 0, 0, 0]);
+            let bytes = super::kernel_memory_event_to_bytes(&raw);
+            let ev = MemoryEvent::from_bytes(&bytes).expect("mprotect should parse");
+            assert_eq!(ev.event_type, EventType::MprotectWX);
+            assert_eq!(ev.addr, 0x5000);
+            assert_eq!(ev.len, 0x100);
+            assert_eq!(ev.flags, 0x3);
+        }
+
+        /// Validates that memfd_create syscall maps `args[0]` to addr, `args[1]` to flags, and len is zero.
+        #[test]
+        fn memory_event_memfd_create_field_mapping() {
+            let raw = raw_with_syscall(3, [0x333, 0x444, 0, 0, 0, 0]);
+            let bytes = super::kernel_memory_event_to_bytes(&raw);
+            let ev = MemoryEvent::from_bytes(&bytes).expect("memfd_create should parse");
+            assert_eq!(ev.event_type, EventType::MemfdCreate);
+            assert_eq!(ev.addr, 0x333);
+            assert_eq!(ev.len, 0);
+            assert_eq!(ev.flags, 0x444);
+        }
+
+        /// Validates that ptrace syscall maps `args[2]` to addr, `args[0]` to flags, and len is zero.
+        #[test]
+        fn memory_event_ptrace_field_mapping() {
+            let raw = raw_with_syscall(4, [0x99, 0, 0xDEAD, 0, 0, 0]);
+            let bytes = super::kernel_memory_event_to_bytes(&raw);
+            let ev = MemoryEvent::from_bytes(&bytes).expect("ptrace should parse");
+            assert_eq!(ev.event_type, EventType::Ptrace);
+            assert_eq!(ev.addr, 0xDEAD);
+            assert_eq!(ev.len, 0);
+            assert_eq!(ev.flags, 0x99);
+        }
+
+        /// Validates that an unknown syscall id yields `None` from `MemoryEvent::from_bytes`.
+        #[test]
+        fn memory_event_unknown_syscall_returns_none() {
+            let raw = raw_with_syscall(99, [1, 2, 3, 4, 5, 6]);
+            let bytes = super::kernel_memory_event_to_bytes(&raw);
+            assert!(MemoryEvent::from_bytes(&bytes).is_none());
+        }
+
+        /// Validates that `MemoryEvent::from_bytes` returns `None` for wrong-length input.
+        #[test]
+        fn memory_event_wrong_length_returns_none() {
+            assert!(MemoryEvent::from_bytes(&[]).is_none());
+            let sz = super::kernel_event_size();
+            if sz > 1 {
+                let short = [0u8; 256];
+                assert!(MemoryEvent::from_bytes(&short[..sz - 1]).is_none());
+            }
+            let long = [0u8; 256];
+            assert!(sz < long.len());
+            assert!(MemoryEvent::from_bytes(&long[..sz + 1]).is_none());
+        }
+
+        /// Validates parsing of an all-zero raw kernel event for syscall id 1 (mmap with zero fields).
+        #[test]
+        fn memory_event_all_zero_raw_mmap() {
+            let raw = KernelMemoryEvent {
+                timestamp_ns: 0,
+                pid: 0,
+                tgid: 0,
+                syscall: 1,
+                args: [0; SYSCALL_ARG_COUNT],
+                comm: [0; TASK_COMM_LEN],
+            };
+            let bytes = super::kernel_memory_event_to_bytes(&raw);
+            let ev = MemoryEvent::from_bytes(&bytes).expect("mmap zero should parse");
+            assert_eq!(ev.event_type, EventType::Mmap);
+            assert_eq!(ev.addr, 0);
+            assert_eq!(ev.len, 0);
+            assert_eq!(ev.flags, 0);
+        }
+    }
+}
