@@ -123,42 +123,42 @@ fn emit_pending_event_on_success(ctx: &TracePointContext, syscall: MemorySyscall
     0
 }
 
-#[tracepoint]
+#[tracepoint(category = "syscalls", name = "sys_enter_mmap")]
 pub fn sys_enter_mmap(ctx: TracePointContext) -> u32 {
     store_pending_event(&ctx, MemorySyscall::Mmap)
 }
 
-#[tracepoint]
+#[tracepoint(category = "syscalls", name = "sys_enter_mprotect")]
 pub fn sys_enter_mprotect(ctx: TracePointContext) -> u32 {
     store_pending_event(&ctx, MemorySyscall::Mprotect)
 }
 
-#[tracepoint]
+#[tracepoint(category = "syscalls", name = "sys_enter_memfd_create")]
 pub fn sys_enter_memfd_create(ctx: TracePointContext) -> u32 {
     store_pending_event(&ctx, MemorySyscall::MemfdCreate)
 }
 
-#[tracepoint]
+#[tracepoint(category = "syscalls", name = "sys_enter_ptrace")]
 pub fn sys_enter_ptrace(ctx: TracePointContext) -> u32 {
     store_pending_event(&ctx, MemorySyscall::Ptrace)
 }
 
-#[tracepoint]
+#[tracepoint(category = "syscalls", name = "sys_exit_mmap")]
 pub fn sys_exit_mmap(ctx: TracePointContext) -> u32 {
     emit_pending_event_on_success(&ctx, MemorySyscall::Mmap)
 }
 
-#[tracepoint]
+#[tracepoint(category = "syscalls", name = "sys_exit_mprotect")]
 pub fn sys_exit_mprotect(ctx: TracePointContext) -> u32 {
     emit_pending_event_on_success(&ctx, MemorySyscall::Mprotect)
 }
 
-#[tracepoint]
+#[tracepoint(category = "syscalls", name = "sys_exit_memfd_create")]
 pub fn sys_exit_memfd_create(ctx: TracePointContext) -> u32 {
     emit_pending_event_on_success(&ctx, MemorySyscall::MemfdCreate)
 }
 
-#[tracepoint]
+#[tracepoint(category = "syscalls", name = "sys_exit_ptrace")]
 pub fn sys_exit_ptrace(ctx: TracePointContext) -> u32 {
     emit_pending_event_on_success(&ctx, MemorySyscall::Ptrace)
 }
