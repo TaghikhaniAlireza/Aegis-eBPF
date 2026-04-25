@@ -18,13 +18,17 @@ def _alert_pb2():
 class AlertChannel:
     """Poll-based consumer for protobuf alerts from ``aegis_alert_channel_try_recv``."""
 
+    __slots__ = ("_handle", "_initial_buf_size")
+
     def __init__(self, capacity: int) -> None:
+        self._handle = None
+        self._initial_buf_size = 4096
         if capacity <= 0:
             raise ValueError("capacity must be positive")
         lib = get_lib()
         self._handle = lib.aegis_alert_channel_new(ctypes.c_size_t(capacity))
-        self._initial_buf_size = 4096
         if not self._handle:
+            self._handle = None
             raise AegisError("failed to create alert channel")
 
     def try_recv(self):
@@ -32,6 +36,9 @@ class AlertChannel:
         lib = get_lib()
         alert_pb2 = _alert_pb2()
         buf = (c_uint8 * self._initial_buf_size)()
+
+        if self._handle is None:
+            raise AegisError("alert channel is closed", ErrorCode.NULL_POINTER)
 
         while True:
             result = int(
@@ -74,10 +81,15 @@ class AlertChannel:
             return msg
 
     def close(self) -> None:
-        if self._handle:
-            lib = get_lib()
-            lib.aegis_alert_channel_free(self._handle)
-            self._handle = None
+        """Release the native alert channel handle; idempotent."""
+        handle = getattr(self, "_handle", None)
+        if handle is None:
+            return
+        self._handle = None
+        try:
+            get_lib().aegis_alert_channel_free(handle)
+        except Exception:
+            pass
 
     def __enter__(self) -> AlertChannel:
         return self
@@ -86,7 +98,10 @@ class AlertChannel:
         self.close()
 
     def __del__(self) -> None:
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 __all__ = ["AlertChannel"]

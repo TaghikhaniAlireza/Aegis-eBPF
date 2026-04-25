@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import unittest
 
 from aegis import (
@@ -59,6 +60,17 @@ class TestArena(unittest.TestCase):
             with self.assertRaises(AegisError) as ctx:
                 arena.push(ev)
             self.assertEqual(ctx.exception.code, ErrorCode.ARENA_FULL)
+
+    def test_gc_del_stress_arena(self) -> None:
+        """Rapid create/drop to exercise ``Arena.__del__`` without double-free."""
+        for _ in range(500):
+            Arena(16)
+            gc.collect()
+
+    def test_gc_del_stress_alert_channel(self) -> None:
+        for _ in range(500):
+            AlertChannel(16)
+            gc.collect()
 
 
 class TestAlertChannel(unittest.TestCase):

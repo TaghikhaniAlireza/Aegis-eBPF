@@ -7,10 +7,13 @@ from ctypes import POINTER, c_int32, c_size_t, c_uint8, c_void_p
 
 from .types import RawMemoryEvent, lib_path
 
-_lib: ctypes.CDLL
+# Initialized lazily by ``load_lib`` so importing the package never touches ``_lib``
+# before ``lib_path()`` is valid (and so ``__del__`` never sees ``NameError``).
+_lib: ctypes.CDLL | None = None
 
 
 def load_lib() -> ctypes.CDLL:
+    """Load the shared library once and bind strict ``argtypes`` / ``restype`` for every FFI symbol."""
     global _lib
     path = lib_path()
     if not path.is_file():
@@ -18,45 +21,46 @@ def load_lib() -> ctypes.CDLL:
             f"Shared library not found at {path}. "
             "Run `cargo build -p aegis-ebpf` from the workspace root."
         )
-    _lib = ctypes.CDLL(str(path))
-    _lib.aegis_arena_new.argtypes = [c_size_t]
-    _lib.aegis_arena_new.restype = c_void_p
+    lib = ctypes.CDLL(str(path))
 
-    _lib.aegis_arena_free.argtypes = [c_void_p]
-    _lib.aegis_arena_free.restype = None
+    lib.aegis_arena_new.argtypes = (c_size_t,)
+    lib.aegis_arena_new.restype = c_void_p
 
-    _lib.aegis_arena_push.argtypes = [c_void_p, POINTER(RawMemoryEvent)]
-    _lib.aegis_arena_push.restype = c_int32
+    lib.aegis_arena_free.argtypes = (c_void_p,)
+    lib.aegis_arena_free.restype = None
 
-    _lib.aegis_arena_pop.argtypes = [c_void_p, POINTER(RawMemoryEvent)]
-    _lib.aegis_arena_pop.restype = c_int32
+    lib.aegis_arena_push.argtypes = (c_void_p, POINTER(RawMemoryEvent))
+    lib.aegis_arena_push.restype = c_int32
 
-    _lib.aegis_arena_try_push.argtypes = [c_void_p, POINTER(RawMemoryEvent)]
-    _lib.aegis_arena_try_push.restype = c_int32
+    lib.aegis_arena_pop.argtypes = (c_void_p, POINTER(RawMemoryEvent))
+    lib.aegis_arena_pop.restype = c_int32
 
-    _lib.aegis_arena_try_pop.argtypes = [c_void_p, POINTER(RawMemoryEvent)]
-    _lib.aegis_arena_try_pop.restype = c_int32
+    lib.aegis_arena_try_push.argtypes = (c_void_p, POINTER(RawMemoryEvent))
+    lib.aegis_arena_try_push.restype = c_int32
 
-    _lib.aegis_arena_len.argtypes = [c_void_p]
-    _lib.aegis_arena_len.restype = c_size_t
+    lib.aegis_arena_try_pop.argtypes = (c_void_p, POINTER(RawMemoryEvent))
+    lib.aegis_arena_try_pop.restype = c_int32
 
-    _lib.aegis_arena_capacity.argtypes = [c_void_p]
-    _lib.aegis_arena_capacity.restype = c_size_t
+    lib.aegis_arena_len.argtypes = (c_void_p,)
+    lib.aegis_arena_len.restype = c_size_t
 
-    _lib.aegis_alert_channel_new.argtypes = [c_size_t]
-    _lib.aegis_alert_channel_new.restype = c_void_p
+    lib.aegis_arena_capacity.argtypes = (c_void_p,)
+    lib.aegis_arena_capacity.restype = c_size_t
 
-    _lib.aegis_alert_channel_free.argtypes = [c_void_p]
-    _lib.aegis_alert_channel_free.restype = None
+    lib.aegis_alert_channel_new.argtypes = (c_size_t,)
+    lib.aegis_alert_channel_new.restype = c_void_p
 
-    _lib.aegis_alert_channel_try_recv.argtypes = [c_void_p, POINTER(c_uint8), c_size_t]
-    _lib.aegis_alert_channel_try_recv.restype = c_int32
+    lib.aegis_alert_channel_free.argtypes = (c_void_p,)
+    lib.aegis_alert_channel_free.restype = None
 
-    return _lib
+    lib.aegis_alert_channel_try_recv.argtypes = (c_void_p, POINTER(c_uint8), c_size_t)
+    lib.aegis_alert_channel_try_recv.restype = c_int32
+
+    _lib = lib
+    return lib
 
 
 def get_lib() -> ctypes.CDLL:
-    try:
-        return _lib
-    except NameError:
+    if _lib is None:
         return load_lib()
+    return _lib
