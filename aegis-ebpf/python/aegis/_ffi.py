@@ -56,6 +56,9 @@ def load_lib() -> ctypes.CDLL:
     lib.aegis_alert_channel_try_recv.argtypes = (c_void_p, POINTER(c_uint8), c_size_t)
     lib.aegis_alert_channel_try_recv.restype = c_int32
 
+    lib.aegis_alert_channel_feed_test_alert.argtypes = (c_void_p,)
+    lib.aegis_alert_channel_feed_test_alert.restype = c_int32
+
     _lib = lib
     return lib
 

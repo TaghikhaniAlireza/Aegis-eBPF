@@ -182,7 +182,7 @@ fn ensure_ffi_function_declarations(header_path: &Path) -> anyhow::Result<()> {
     let mut content =
         fs::read_to_string(header_path).context("failed to read generated C header")?;
 
-    if content.contains("aegis_arena_new(") {
+    if content.contains("aegis_arena_new(") && content.contains("aegis_alert_channel_feed_test_alert(") {
         return Ok(());
     }
 
@@ -204,6 +204,8 @@ AegisAlertChannelHandle *aegis_alert_channel_new(size_t capacity);
 void aegis_alert_channel_free(AegisAlertChannelHandle *handle);
 int32_t aegis_alert_channel_try_recv(AegisAlertChannelHandle *handle, uint8_t *out_buffer, size_t buffer_size);
 int32_t aegis_alert_channel_recv(AegisAlertChannelHandle *handle, uint8_t *out_buffer, size_t buffer_size);
+/* Test harness: inject maximal protobuf alert (see Rust aegis_alert_channel_feed_test_alert). */
+int32_t aegis_alert_channel_feed_test_alert(AegisAlertChannelHandle *handle);
 
 #ifdef __cplusplus
 } // extern "C"

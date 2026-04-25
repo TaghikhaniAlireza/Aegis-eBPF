@@ -47,6 +47,15 @@ impl AlertChannel {
         Ok(())
     }
 
+    /// Enqueue a raw protobuf alert (for FFI test harnesses). Uses the same `try_send` path as production.
+    #[allow(clippy::result_large_err)]
+    pub fn inject_test_proto(
+        &self,
+        alert: ProtoAlert,
+    ) -> Result<(), mpsc::error::TrySendError<ProtoAlert>> {
+        self.tx.try_send(alert)
+    }
+
     /// Try to send an alert without blocking.
     ///
     /// Returns Ok(()) if sent, Err if full or closed.
@@ -295,8 +304,57 @@ pub unsafe extern "C" fn aegis_alert_channel_recv(
     unsafe { aegis_alert_channel_try_recv(handle, out_buffer, buffer_size) }
 }
 
+/// Push a fixed, maximal-field [`ProtoAlert`] into the channel for cross-language integrity tests.
+///
+/// Intended for Go/Python harnesses (not production): exercises protobuf serialization and the
+/// same `try_recv` path as real alerts. Returns `AegisErrorCode` as `i32`.
+///
+/// # Safety
+/// `handle` must be a valid pointer returned by `aegis_alert_channel_new` and not yet freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aegis_alert_channel_feed_test_alert(handle: *mut AegisAlertChannelHandle) -> i32 {
+    if handle.is_null() {
+        return AegisErrorCode::NullPointer as i32;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let channel = AegisAlertChannelHandle::as_ref(handle).expect("checked non-null");
+
+        let big = "Z".repeat(16_384);
+        let ctx = serde_json::json!({
+            "n": i64::MAX,
+            "nested": { "s": "inner", "arr": [1, 2, 3] },
+            "big": big,
+        })
+        .to_string();
+
+        let alert = ProtoAlert {
+            alert_id: "edgecase-alert-id-12345".to_string(),
+            rule_name: "rule-integrity-αβ".to_string(),
+            severity: ProtoSeverity::Critical as i32,
+            message: "msg-\n\t\"escaped\"".to_string(),
+            tgid: u32::MAX,
+            process_name: "procname-no-nul-padding".to_string(),
+            timestamp_ns: u64::MAX,
+            context_json: ctx,
+        };
+
+        match channel.inject_test_proto(alert) {
+            Ok(()) => AegisErrorCode::Success as i32,
+            Err(_) => AegisErrorCode::Panic as i32,
+        }
+    }));
+
+    match result {
+        Ok(code) => code,
+        Err(_) => AegisErrorCode::Panic as i32,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use prost::Message as _;
+
     use super::*;
 
     fn sample_alert(rule_name: &str, severity: RustSeverity, tgid: u32) -> RustAlert {
@@ -389,6 +447,25 @@ mod tests {
         let result = unsafe { aegis_alert_channel_try_recv(handle, std::ptr::null_mut(), 1024) };
 
         assert_eq!(result, AegisErrorCode::NullPointer as i32);
+        unsafe { aegis_alert_channel_free(handle) };
+    }
+
+    #[test]
+    fn test_ffi_feed_test_alert_roundtrip() {
+        let handle = aegis_alert_channel_new(4);
+        assert!(!handle.is_null());
+        let st = unsafe { aegis_alert_channel_feed_test_alert(handle) };
+        assert_eq!(st, AegisErrorCode::Success as i32);
+
+        let mut buf = vec![0u8; 512 * 1024];
+        let n = unsafe { aegis_alert_channel_try_recv(handle, buf.as_mut_ptr(), buf.len()) };
+        assert!(n > 0, "expected payload, got {n}");
+        let got = ProtoAlert::decode(&buf[..n as usize]).expect("decode");
+        assert_eq!(got.alert_id, "edgecase-alert-id-12345");
+        assert_eq!(got.tgid, u32::MAX);
+        assert_eq!(got.timestamp_ns, u64::MAX);
+        assert_eq!(got.process_name, "procname-no-nul-padding");
+        assert!(!got.context_json.is_empty());
         unsafe { aegis_alert_channel_free(handle) };
     }
 }

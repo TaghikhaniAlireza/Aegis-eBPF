@@ -56,6 +56,17 @@ func (c *AlertChannelHandle) Close() {
 	})
 }
 
+// FeedTestAlert enqueues a maximal-field protobuf alert built in Rust (harness / integrity tests only).
+func (c *AlertChannelHandle) FeedTestAlert() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.h == nil {
+		return ErrAlertChannelClosed
+	}
+	code := C.aegis_alert_channel_feed_test_alert(c.h)
+	return errFromArenaCode(code)
+}
+
 // TryRecvNonBlocking mirrors the Rust try_recv FFI (returns n, need, err from recvAlertResult).
 func (c *AlertChannelHandle) TryRecvNonBlocking(buf []byte) (n int, need int, err error) {
 	c.mu.RLock()
