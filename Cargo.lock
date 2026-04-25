@@ -63,6 +63,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aegis-ebpf-loader"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aya",
+ "libc",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

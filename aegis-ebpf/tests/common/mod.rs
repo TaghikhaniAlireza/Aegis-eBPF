@@ -31,8 +31,13 @@ pub fn assert_running_as_root() {
 }
 
 fn collect_ebpf_object_paths() -> Vec<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut paths = Vec::new();
+
+    if let Ok(explicit) = std::env::var("AEGIS_EBPF_OBJECT") {
+        paths.push(PathBuf::from(explicit));
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
     let workspace_root = manifest_dir.parent().map(PathBuf::from);
     let target_roots = {
@@ -91,6 +96,7 @@ pub fn resolve_ebpf_object_path() -> PathBuf {
             "compiled eBPF object `aegis-ebpf` not found. Checked:\n  {tried}\n\n\
              Build the BPF target first, for example from the workspace root:\n\
                cargo build -p aegis-ebpf\n\n\
+             Or set AEGIS_EBPF_OBJECT to an explicit path (used by Vagrant / kernel matrix).\n\n\
              (The `aegis-ebpf` crate's build.rs compiles `aegis-ebpf-ebpf` for `bpfel-unknown-none`.)"
         );
     }

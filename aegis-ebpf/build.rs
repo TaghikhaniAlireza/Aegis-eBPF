@@ -123,6 +123,7 @@ fn main() -> anyhow::Result<()> {
             .parent()
             .ok_or_else(|| anyhow!("no parent for {manifest_path}"))?
             .as_str(),
+        features: &["ebpf-bin"],
         ..Default::default()
     };
     let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR missing")?);

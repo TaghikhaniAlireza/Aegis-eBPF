@@ -4,6 +4,7 @@ members = [
     "aegis-ebpf",
     "aegis-ebpf-common",
     "aegis-ebpf-ebpf",
+    "aegis-ebpf-loader",
 ]
 default-members = ["aegis-ebpf", "aegis-ebpf-common"]
 
