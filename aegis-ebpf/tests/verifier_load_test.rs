@@ -11,11 +11,11 @@
 //!
 //! `sudo env PATH="$PATH" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" cargo test --test verifier_load_test -p aegis-ebpf -- --ignored`
 
-use std::path::PathBuf;
+mod common;
 
 use aya::{EbpfLoader, VerifierLogLevel, programs::Program};
 
-/// Must match `#[tracepoint]` entry points in `aegis-ebpf-ebpf`.
+/// Must match `#[tracepoint(...)]` entry points in `aegis-ebpf-ebpf`.
 const EXPECTED_TRACEPOINTS: &[&str] = &[
     "sys_enter_mmap",
     "sys_enter_mprotect",
@@ -27,116 +27,13 @@ const EXPECTED_TRACEPOINTS: &[&str] = &[
     "sys_exit_ptrace",
 ];
 
-fn bump_memlock_rlimit() {
-    let rlim = libc::rlimit {
-        rlim_cur: libc::RLIM_INFINITY,
-        rlim_max: libc::RLIM_INFINITY,
-    };
-    let _ = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
-}
-
-fn assert_running_as_root() {
-    let euid = std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("Uid:"))?
-                .split_whitespace()
-                .nth(1)?
-                .parse::<u32>()
-                .ok()
-        });
-    assert_eq!(
-        euid,
-        Some(0),
-        "verifier_load_test must run as root (eBPF load requires CAP_BPF). \
-         When using sudo, pass through PATH, RUSTUP_HOME, and CARGO_HOME so cargo/rustup resolve, \
-         then: cargo test --test verifier_load_test -p aegis-ebpf"
-    );
-}
-
-fn collect_ebpf_object_paths() -> Vec<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut paths = Vec::new();
-
-    let workspace_root = manifest_dir.parent().map(PathBuf::from);
-    let target_roots = {
-        let mut roots = Vec::new();
-        if let Some(ref ws) = workspace_root {
-            roots.push(ws.join("target"));
-        }
-        if let Ok(td) = std::env::var("CARGO_TARGET_DIR") {
-            roots.push(PathBuf::from(td));
-        }
-        roots
-    };
-
-    for target in &target_roots {
-        paths.push(target.join("bpfel-unknown-none/release/aegis-ebpf"));
-        paths.push(target.join("bpfel-unknown-none/debug/aegis-ebpf"));
-    }
-
-    // `aya_build` output (used by this workspace's `build.rs`): nested under each `OUT_DIR`.
-    for target in &target_roots {
-        for profile in ["debug", "release"] {
-            let build_dir = target.join(profile).join("build");
-            if let Ok(entries) = std::fs::read_dir(&build_dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    if !name.starts_with("aegis-ebpf-") {
-                        continue;
-                    }
-                    let out = entry.path().join("out");
-                    paths.push(out.join("aegis-ebpf"));
-                    paths.push(out.join(
-                        "aya-build/target/aegis-ebpf-ebpf/bpfel-unknown-none/release/aegis-ebpf",
-                    ));
-                }
-            }
-        }
-    }
-
-    paths
-}
-
-fn resolve_ebpf_object_path() -> PathBuf {
-    let mut candidates: Vec<PathBuf> = collect_ebpf_object_paths()
-        .into_iter()
-        .filter(|p| p.is_file())
-        .collect();
-
-    if candidates.is_empty() {
-        let tried = collect_ebpf_object_paths()
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join("\n  ");
-
-        panic!(
-            "compiled eBPF object `aegis-ebpf` not found. Checked:\n  {tried}\n\n\
-             Build the BPF target first, for example from the workspace root:\n\
-               cargo build -p aegis-ebpf\n\n\
-             (The `aegis-ebpf` crate's build.rs compiles `aegis-ebpf-ebpf` for `bpfel-unknown-none`.)"
-        );
-    }
-
-    candidates.sort_by_key(|p| {
-        std::fs::metadata(p)
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-    });
-
-    candidates.pop().expect("non-empty after is_file filter")
-}
-
 #[test]
 #[ignore = "needs root + full BPF tracepoint support; run with --ignored on a capable kernel"]
 fn test_load_ebpf_program() {
-    assert_running_as_root();
-    bump_memlock_rlimit();
+    common::assert_running_as_root();
+    common::bump_memlock_rlimit();
 
-    let path = resolve_ebpf_object_path();
+    let path = common::resolve_ebpf_object_path();
     let mut ebpf = EbpfLoader::new()
         .verifier_log_level(VerifierLogLevel::VERBOSE | VerifierLogLevel::STATS)
         .load_file(&path)
