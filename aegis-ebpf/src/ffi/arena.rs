@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    cell::UnsafeCell,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use super::types::RawMemoryEvent;
@@ -8,7 +11,11 @@ use crate::observability::metrics::{record_event_dropped, record_event_ingested}
 
 #[derive(Debug)]
 pub struct EventArena {
-    buffer: Box<[RawMemoryEvent]>,
+    /// One `UnsafeCell` per slot so the producer can `ptr::write` and the consumer can `ptr::read`
+    /// without sharing a `&[RawMemoryEvent]` reference (which Miri's Stacked Borrows rejects for
+    /// concurrent access), while the SPSC index protocol still ensures at most one logical owner
+    /// per slot at a time.
+    buffer: Box<[UnsafeCell<RawMemoryEvent>]>,
     capacity: usize,
     write_index: AtomicUsize,
     read_index: AtomicUsize,
@@ -23,20 +30,21 @@ impl EventArena {
             "capacity must be a power of two"
         );
 
-        let buffer = vec![
-            RawMemoryEvent {
-                timestamp_ns: 0,
-                tgid: 0,
-                pid: 0,
-                syscall_id: 0,
-                _pad0: 0,
-                args: [0; 6],
-                cgroup_id: 0,
-                comm: [0; 16],
-            };
-            capacity
-        ]
-        .into_boxed_slice();
+        let buffer = (0..capacity)
+            .map(|_| {
+                UnsafeCell::new(RawMemoryEvent {
+                    timestamp_ns: 0,
+                    tgid: 0,
+                    pid: 0,
+                    syscall_id: 0,
+                    _pad0: 0,
+                    args: [0; 6],
+                    cgroup_id: 0,
+                    comm: [0; 16],
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
 
         Arc::new(Self {
             buffer,
@@ -57,11 +65,12 @@ impl EventArena {
             return Err(ArenaError::Full);
         }
 
-        // SAFETY: `write` is always within bounds because it is maintained modulo
-        // `capacity`, and we only write when the ring is not full (`next_write != read`),
-        // which guarantees this slot is not currently owned by the consumer.
+        // SAFETY: `write` is in `0..capacity` (maintained modulo `capacity`). The ring is not
+        // full (`next_write != read`), so by SPSC protocol this slot is not being read. Each slot
+        // is an `UnsafeCell`, so writing through `get()` does not conflict with other slots'
+        // `UnsafeCell` borrows under Miri/Stacked Borrows.
         unsafe {
-            let slot = self.buffer.as_ptr().add(write) as *mut RawMemoryEvent;
+            let slot = self.buffer.get_unchecked(write).get();
             std::ptr::write(slot, event);
         }
 
@@ -79,10 +88,10 @@ impl EventArena {
             return None;
         }
 
-        // SAFETY: `read` is always within bounds because it is maintained modulo
-        // `capacity`, and `read != write` guarantees this slot contains a produced event.
+        // SAFETY: `read` is in `0..capacity`. `read != write` implies a producer has committed an
+        // event at this index and not yet been popped past it.
         let event = unsafe {
-            let slot = self.buffer.as_ptr().add(read);
+            let slot = self.buffer.get_unchecked(read).get();
             std::ptr::read(slot)
         };
 
@@ -114,11 +123,11 @@ impl EventArena {
     }
 }
 
-// SAFETY: all shared mutable state is coordinated via atomic indices; event
-// slots contain `RawMemoryEvent` (plain Copy data, no interior pointers).
+// SAFETY: all shared mutable state is coordinated via atomic indices; each slot is an
+// `UnsafeCell<RawMemoryEvent>` with `RawMemoryEvent: Copy` (plain data, no interior pointers).
 unsafe impl Send for EventArena {}
-// SAFETY: concurrent access follows SPSC index discipline with atomics and does
-// not expose unsynchronized mutable references.
+// SAFETY: concurrent access follows SPSC index discipline with atomics; only one thread writes a
+// given index and only one thread reads it, matching `UnsafeCell` safety requirements.
 unsafe impl Sync for EventArena {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

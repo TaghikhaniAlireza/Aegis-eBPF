@@ -1,13 +1,108 @@
 use std::{
-    env, fs,
+    env,
+    ffi::OsStr,
+    fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context as _, anyhow};
 use aya_build::Toolchain;
 
+/// Nested `cargo build` for `bpfel-unknown-none` breaks under Miri (no `RUSTC` for the child) and
+/// under ASAN (`RUSTFLAGS` would try to link the BPF target with the host sanitizer runtime). In
+/// those cases we reuse an eBPF binary produced by a normal `cargo build` of this crate.
+fn use_prebuilt_ebpf_instead_of_nested_cargo() -> bool {
+    if env::var_os("MIRI_SYSROOT").is_some() {
+        return true;
+    }
+    if let Ok(out_dir) = env::var("OUT_DIR")
+        && (out_dir.contains("/miri/") || out_dir.contains("\\miri\\"))
+    {
+        return true;
+    }
+    let rustflags_contain_asan = |s: &str| s.contains("sanitizer=address");
+    if env::var("RUSTFLAGS")
+        .map(|v| rustflags_contain_asan(&v))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if env::var("CARGO_ENCODED_RUSTFLAGS")
+        .map(|v| rustflags_contain_asan(&v))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    false
+}
+
+fn target_root_from_out_dir(out_dir: &Path) -> anyhow::Result<PathBuf> {
+    out_dir
+        .ancestors()
+        .find(|p| p.file_name() == Some(OsStr::new("target")))
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            anyhow!(
+                "OUT_DIR is not under a .../target/... directory: {}",
+                out_dir.display()
+            )
+        })
+}
+
+fn copy_prebuilt_ebpf_program(out_dir: &Path) -> anyhow::Result<()> {
+    let target_root = target_root_from_out_dir(out_dir)?;
+    let build_roots = [
+        target_root.join("debug/build"),
+        target_root.join("release/build"),
+    ];
+
+    let mut artifact: Option<PathBuf> = None;
+    'outer: for build_dir in build_roots {
+        if !build_dir.is_dir() {
+            continue;
+        }
+        let entries = match fs::read_dir(&build_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            if !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("aegis-ebpf-")
+            {
+                continue;
+            }
+            let candidate = entry.path().join("out").join("aegis-ebpf");
+            if candidate.is_file() {
+                artifact = Some(candidate);
+                break 'outer;
+            }
+        }
+    }
+
+    let src = artifact.ok_or_else(|| {
+        anyhow!(
+            "prebuilt eBPF program `aegis-ebpf` not found under {}/*/build/aegis-ebpf-*/out/; run `cargo build -p aegis-ebpf` (without Miri or ASAN) once",
+            target_root.display()
+        )
+    })?;
+
+    let dst = out_dir.join("aegis-ebpf");
+    let _: u64 = fs::copy(&src, &dst)
+        .with_context(|| format!("failed to copy {} to {}", src.display(), dst.display()))?;
+    println!(
+        "cargo:warning=Using prebuilt eBPF program from {} (Miri/ASAN or equivalent build)",
+        src.display()
+    );
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     println!("cargo::rustc-check-cfg=cfg(cbindgen)");
+    println!("cargo:rerun-if-env-changed=MIRI_SYSROOT");
+    println!("cargo:rerun-if-env-changed=RUSTFLAGS");
+    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
 
     let cargo_metadata::Metadata { packages, .. } = cargo_metadata::MetadataCommand::new()
         .no_deps()
@@ -30,11 +125,16 @@ fn main() -> anyhow::Result<()> {
             .as_str(),
         ..Default::default()
     };
-    aya_build::build_ebpf([ebpf_package], Toolchain::default())?;
+    let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR missing")?);
+    if use_prebuilt_ebpf_instead_of_nested_cargo() {
+        copy_prebuilt_ebpf_program(&out_dir)?;
+    } else {
+        aya_build::build_ebpf([ebpf_package], Toolchain::default())?;
+    }
 
     // Compile protobuf schemas at build time.
     prost_build::Config::new()
-        .out_dir(env::var("OUT_DIR").context("OUT_DIR missing")?)
+        .out_dir(out_dir)
         .compile_protos(&["proto/alert.proto"], &["proto/"])
         .context("failed to compile protos")?;
 

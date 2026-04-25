@@ -148,7 +148,9 @@ mod tests {
     use super::*;
 
     /// Serializes a [`KernelMemoryEvent`] to its exact wire layout for golden-byte tests.
-    fn kernel_memory_event_to_bytes(event: &KernelMemoryEvent) -> [u8; core::mem::size_of::<KernelMemoryEvent>()] {
+    fn kernel_memory_event_to_bytes(
+        event: &KernelMemoryEvent,
+    ) -> [u8; core::mem::size_of::<KernelMemoryEvent>()] {
         let mut out = [0u8; core::mem::size_of::<KernelMemoryEvent>()];
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -266,7 +268,10 @@ mod tests {
         // Place payload at offset 1 so `&buf[1..]` is not 8-byte aligned.
         buf[1..1 + inner.len()].copy_from_slice(&inner);
         let slice = &buf[1..1 + inner.len()];
-        assert_ne!(slice.as_ptr() as usize % core::mem::align_of::<KernelMemoryEvent>(), 0);
+        assert_ne!(
+            slice.as_ptr() as usize % core::mem::align_of::<KernelMemoryEvent>(),
+            0
+        );
         let parsed = KernelMemoryEvent::from_bytes(slice).expect("read_unaligned should succeed");
         assert_eq!(parsed.timestamp_ns, original.timestamp_ns);
         assert_eq!(parsed.syscall, original.syscall);

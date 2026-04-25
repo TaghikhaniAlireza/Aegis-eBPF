@@ -48,21 +48,37 @@ pub fn record_event_dropped() {
 }
 
 #[inline]
+#[cfg_attr(
+    not(any(feature = "prometheus", feature = "otel")),
+    allow(unused_variables)
+)]
 pub fn record_alert_fired(rule_id: &str) {
     record_metric!(counter: ALERTS_FIRED_TOTAL, "rule_id" => rule_id.to_string());
 }
 
 #[inline]
+#[cfg_attr(
+    not(any(feature = "prometheus", feature = "otel")),
+    allow(unused_variables)
+)]
 pub fn record_pipeline_latency(latency_ns: u64) {
     record_metric!(histogram: PIPELINE_LATENCY_NS, latency_ns);
 }
 
 #[inline]
+#[cfg_attr(
+    not(any(feature = "prometheus", feature = "otel")),
+    allow(unused_variables)
+)]
 pub fn update_reorder_buffer_size(size: usize) {
     record_metric!(gauge: REORDER_BUFFER_SIZE, size);
 }
 
 #[inline]
+#[cfg_attr(
+    not(any(feature = "prometheus", feature = "otel")),
+    allow(unused_variables)
+)]
 pub fn update_worker_queue_depth(worker_id: usize, depth: usize) {
     record_metric!(
         gauge: WORKER_QUEUE_DEPTH,

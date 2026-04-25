@@ -344,7 +344,10 @@ mod tests {
     #[test]
     fn parse_os_release_field_key_at_start() {
         let content = "ID=alpha\nFOO=bar\n";
-        assert_eq!(parse_os_release_field(content, "ID").as_deref(), Some("alpha"));
+        assert_eq!(
+            parse_os_release_field(content, "ID").as_deref(),
+            Some("alpha")
+        );
     }
 
     /// Validates parsing when the target field is in the middle of the file.
@@ -361,7 +364,10 @@ mod tests {
     #[test]
     fn parse_os_release_field_key_at_end() {
         let content = "A=1\nB=2\nID=last\n";
-        assert_eq!(parse_os_release_field(content, "ID").as_deref(), Some("last"));
+        assert_eq!(
+            parse_os_release_field(content, "ID").as_deref(),
+            Some("last")
+        );
     }
 
     // --- btfhub_arch_for (testable without mocking env) ---
@@ -387,6 +393,9 @@ mod tests {
     /// Validates that `btfhub_arch()` matches `btfhub_arch_for` for the current host.
     #[test]
     fn btfhub_arch_matches_env_consts() {
-        assert_eq!(super::btfhub_arch(), btfhub_arch_for(std::env::consts::ARCH));
+        assert_eq!(
+            super::btfhub_arch(),
+            btfhub_arch_for(std::env::consts::ARCH)
+        );
     }
 }
