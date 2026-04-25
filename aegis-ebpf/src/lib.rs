@@ -252,12 +252,18 @@ fn parse_os_release_field(content: &str, key: &str) -> Option<String> {
     Some(value)
 }
 
-fn btfhub_arch() -> &'static str {
-    match std::env::consts::ARCH {
+// Maps host `ARCH` strings (e.g. `std::env::consts::ARCH`) to BTFHub archive directory names.
+// Pure helper so tests can pass arbitrary `arch` without changing the process environment.
+fn btfhub_arch_for(arch: &str) -> &str {
+    match arch {
         "aarch64" => "arm64",
         "x86_64" => "x86_64",
         other => other,
     }
+}
+
+fn btfhub_arch() -> &'static str {
+    btfhub_arch_for(std::env::consts::ARCH)
 }
 
 fn find_btf_file(root: &Path) -> anyhow::Result<PathBuf> {
@@ -276,4 +282,111 @@ fn find_btf_file(root: &Path) -> anyhow::Result<PathBuf> {
         }
     }
     Err(anyhow::anyhow!("no .btf file found"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{btfhub_arch_for, parse_os_release_field};
+
+    // --- parse_os_release_field ---
+
+    /// Validates that `ID=` is parsed from a typical `/etc/os-release` fragment.
+    #[test]
+    fn parse_os_release_field_id_ubuntu() {
+        let content = "ID=ubuntu\nVERSION_ID=\"22.04\"\n";
+        assert_eq!(
+            parse_os_release_field(content, "ID").as_deref(),
+            Some("ubuntu")
+        );
+    }
+
+    /// Validates that quoted `VERSION_ID` values are unquoted in the result.
+    #[test]
+    fn parse_os_release_field_version_id_quoted() {
+        let content = "ID=ubuntu\nVERSION_ID=\"22.04\"\n";
+        assert_eq!(
+            parse_os_release_field(content, "VERSION_ID").as_deref(),
+            Some("22.04")
+        );
+    }
+
+    /// Validates that a missing key returns `None`.
+    #[test]
+    fn parse_os_release_field_missing_returns_none() {
+        let content = "ID=ubuntu\n";
+        assert!(parse_os_release_field(content, "VERSION_ID").is_none());
+    }
+
+    /// Validates that empty input yields `None` for any field.
+    #[test]
+    fn parse_os_release_field_empty_content() {
+        assert!(parse_os_release_field("", "ID").is_none());
+    }
+
+    /// Validates that lines without `KEY=` are ignored and do not satisfy the lookup.
+    #[test]
+    fn parse_os_release_field_malformed_line_no_equals() {
+        let content = "not_a_key_value_line\nalso_no_equals\n";
+        assert!(parse_os_release_field(content, "ID").is_none());
+    }
+
+    /// Validates that a malformed line is skipped and a later valid line still matches.
+    #[test]
+    fn parse_os_release_field_skips_malformed_then_finds_key() {
+        let content = "garbage\nID=debian\n";
+        assert_eq!(
+            parse_os_release_field(content, "ID").as_deref(),
+            Some("debian")
+        );
+    }
+
+    /// Validates that the first matching line wins when the key appears only once at the start.
+    #[test]
+    fn parse_os_release_field_key_at_start() {
+        let content = "ID=alpha\nFOO=bar\n";
+        assert_eq!(parse_os_release_field(content, "ID").as_deref(), Some("alpha"));
+    }
+
+    /// Validates parsing when the target field is in the middle of the file.
+    #[test]
+    fn parse_os_release_field_key_in_middle() {
+        let content = "A=1\nID=middle\nB=2\n";
+        assert_eq!(
+            parse_os_release_field(content, "ID").as_deref(),
+            Some("middle")
+        );
+    }
+
+    /// Validates parsing when the target field is the last line.
+    #[test]
+    fn parse_os_release_field_key_at_end() {
+        let content = "A=1\nB=2\nID=last\n";
+        assert_eq!(parse_os_release_field(content, "ID").as_deref(), Some("last"));
+    }
+
+    // --- btfhub_arch_for (testable without mocking env) ---
+
+    /// Validates that `x86_64` maps to the BTFHub directory name `x86_64`.
+    #[test]
+    fn btfhub_arch_for_x86_64() {
+        assert_eq!(btfhub_arch_for("x86_64"), "x86_64");
+    }
+
+    /// Validates that `aarch64` maps to BTFHub's `arm64` layout.
+    #[test]
+    fn btfhub_arch_for_aarch64() {
+        assert_eq!(btfhub_arch_for("aarch64"), "arm64");
+    }
+
+    /// Validates that unknown architecture strings pass through unchanged.
+    #[test]
+    fn btfhub_arch_for_unknown_passthrough() {
+        assert_eq!(btfhub_arch_for("riscv64gc"), "riscv64gc");
+    }
+
+    /// Validates that `btfhub_arch()` matches `btfhub_arch_for` for the current host.
+    #[test]
+    fn btfhub_arch_matches_env_consts() {
+        assert_eq!(super::btfhub_arch(), btfhub_arch_for(std::env::consts::ARCH));
+    }
 }
