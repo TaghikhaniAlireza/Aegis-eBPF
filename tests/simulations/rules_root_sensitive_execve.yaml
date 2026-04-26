@@ -1,0 +1,16 @@
+# Example: fire only for root (effective UID 0) when the captured execve command line
+# contains either "whoami" or the substring "cat /etc/shadow" (as seen in joined argv).
+#
+# Requires the eBPF ring-buffer path (execve argv snapshot + UID at syscall exit).
+
+rules:
+  - id: "ROOT_SENSITIVE_EXEC"
+    name: "Root exec: whoami or cat /etc/shadow"
+    severity: "critical"
+    description: "uid == 0 and execve argv snapshot matches sensitive substrings"
+    conditions:
+      syscall: "execve"
+      uid: 0
+      cmdline_contains_any:
+        - "whoami"
+        - "cat /etc/shadow"

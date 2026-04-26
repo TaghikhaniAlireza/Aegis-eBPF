@@ -26,6 +26,10 @@ fn prometheus_scrape_contains_arena_metrics() {
             args: [0x7fff_0000_0000 + i, 4096, 0, 0, 0, 0],
             cgroup_id: 1234,
             comm: [0; 16],
+            uid: 0,
+            _pad_uid: 0,
+            syscall_ret: 0,
+            execve_cmdline: [0; aegis_ebpf::ffi::types::RAW_EXECVE_CMDLINE_LEN],
         };
         arena.try_push(ev).expect("push");
     }

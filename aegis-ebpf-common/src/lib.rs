@@ -1,7 +1,43 @@
 #![no_std]
 
+#[cfg(feature = "user")]
+extern crate alloc;
+
 pub const TASK_COMM_LEN: usize = 16;
 pub const SYSCALL_ARG_COUNT: usize = 6;
+
+/// Ring-buffer sample layout version (bump when `RingBufferSample` changes).
+pub const RING_SAMPLE_LAYOUT_VERSION: u32 = 1;
+
+/// Number of `argv[]` entries captured on `execve` (each up to [`EXECVE_ARG_MAX_LEN`] bytes).
+/// Kept small so the pending-event struct stays within the eBPF stack limit (~512 B).
+pub const EXECVE_ARGC_CAPTURE: usize = 4;
+
+/// Max bytes per argv slot (including NUL) for eBPF `bpf_probe_read_user_str`.
+pub const EXECVE_ARG_MAX_LEN: usize = 32;
+
+/// Total bytes for the flattened argv snapshot in [`RingBufferSample`].
+pub const EXECVE_ARGV_BLOB_LEN: usize = EXECVE_ARGC_CAPTURE * EXECVE_ARG_MAX_LEN;
+
+/// Full ring-buffer record written by the eBPF program (kernel + syscall return + UID + argv blob).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RingBufferSample {
+    pub kernel: KernelMemoryEvent,
+    /// Syscall return value from `sys_exit_*` (`ctx` offset 16).
+    pub syscall_ret: i64,
+    /// Effective UID at syscall exit (`bpf_get_current_uid_gid()` low 32 bits).
+    pub uid: u32,
+    pub _reserved: u32,
+    pub layout_version: u32,
+    pub execve_argv_blob: [u8; EXECVE_ARGV_BLOB_LEN],
+}
+
+impl RingBufferSample {
+    pub const fn wire_size() -> usize {
+        core::mem::size_of::<Self>()
+    }
+}
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -94,54 +130,106 @@ impl EventType {
 pub type MemoryEvent = KernelMemoryEvent;
 
 #[cfg(feature = "user")]
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MemoryEvent {
     pub timestamp_ns: u64,
     pub tgid: u32,
     pub pid: u32,
+    /// Effective UID captured at syscall exit (from eBPF `bpf_get_current_uid_gid`).
+    pub uid: u32,
     pub comm: [u8; TASK_COMM_LEN],
     pub event_type: EventType,
     pub addr: u64,
     pub len: u64,
     pub flags: u64,
     pub ret: i64,
+    /// Joined argv snapshot for `execve` (from eBPF user-memory reads); empty for other syscalls.
+    pub execve_cmdline: alloc::string::String,
 }
 
 #[cfg(feature = "user")]
 impl MemoryEvent {
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        let raw = KernelMemoryEvent::from_bytes(bytes)?;
+        let (raw, syscall_ret, uid, execve_argv_blob) =
+            if bytes.len() == RingBufferSample::wire_size() {
+                let sample =
+                    unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const RingBufferSample) };
+                if sample.layout_version != RING_SAMPLE_LAYOUT_VERSION {
+                    return None;
+                }
+                (
+                    sample.kernel,
+                    sample.syscall_ret,
+                    sample.uid,
+                    Some(sample.execve_argv_blob),
+                )
+            } else if bytes.len() == core::mem::size_of::<KernelMemoryEvent>() {
+                let raw = KernelMemoryEvent::from_bytes(bytes)?;
+                (raw, 0i64, 0u32, None)
+            } else {
+                return None;
+            };
+
         let event_type = EventType::from_syscall(raw.syscall)?;
 
         let (addr, len, flags, ret) = match event_type {
-            EventType::Mmap => (raw.args[0], raw.args[1], raw.args[3], 0),
-            EventType::MprotectWX => (raw.args[0], raw.args[1], raw.args[2], 0),
-            EventType::MemfdCreate => (raw.args[0], 0, raw.args[1], 0),
+            EventType::Mmap => (raw.args[0], raw.args[1], raw.args[3], syscall_ret),
+            EventType::MprotectWX => (raw.args[0], raw.args[1], raw.args[2], syscall_ret),
+            EventType::MemfdCreate => (raw.args[0], 0, raw.args[1], syscall_ret),
             // ptrace: request = args[0], target pid = args[1], data ptr = args[2]
-            EventType::Ptrace => (raw.args[2], raw.args[1], raw.args[0], 0),
+            EventType::Ptrace => (raw.args[2], raw.args[1], raw.args[0], syscall_ret),
             // execve: filename userspace pointer, argv pointer (userspace rules may read /proc/pid/cmdline)
-            EventType::Execve => (raw.args[0], raw.args[1], 0, 0),
+            EventType::Execve => (raw.args[0], raw.args[1], 0, syscall_ret),
             // openat: dfd, pathname user pointer, flags; fd returned on exit (stored in raw by userspace bridge if needed)
-            EventType::Openat => (raw.args[1], raw.args[2], raw.args[0], 0),
+            EventType::Openat => (raw.args[1], raw.args[2], raw.args[0], syscall_ret),
+        };
+
+        let execve_cmdline = if event_type == EventType::Execve {
+            execve_argv_blob
+                .as_ref()
+                .map(decode_execve_argv_blob)
+                .unwrap_or_default()
+        } else {
+            alloc::string::String::new()
         };
 
         Some(Self {
             timestamp_ns: raw.timestamp_ns,
             tgid: raw.tgid,
             pid: raw.pid,
+            uid,
             comm: raw.comm,
             event_type,
             addr,
             len,
             flags,
             ret,
+            execve_cmdline,
         })
     }
 }
 
 #[cfg(feature = "user")]
-unsafe impl aya::Pod for MemoryEvent {}
+fn decode_execve_argv_blob(blob: &[u8; EXECVE_ARGV_BLOB_LEN]) -> alloc::string::String {
+    let mut parts = alloc::vec::Vec::<alloc::string::String>::new();
+    for slot in 0..EXECVE_ARGC_CAPTURE {
+        let off = slot * EXECVE_ARG_MAX_LEN;
+        let chunk = &blob[off..off + EXECVE_ARG_MAX_LEN];
+        let end = chunk.iter().position(|&b| b == 0).unwrap_or(chunk.len());
+        if end == 0 {
+            break;
+        }
+        parts.push(alloc::string::String::from_utf8_lossy(&chunk[..end]).into_owned());
+    }
+    let mut out = alloc::string::String::new();
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(p);
+    }
+    out
+}
 
 // ---------------------------------------------------------------------------
 // Unit tests (userspace / `user` feature for `MemoryEvent::from_bytes`)
@@ -414,6 +502,49 @@ mod tests {
             let long = [0u8; 256];
             assert!(sz < long.len());
             assert!(MemoryEvent::from_bytes(&long[..sz + 1]).is_none());
+        }
+
+        /// Validates full ring-buffer sample with execve argv blob and UID.
+        #[test]
+        fn memory_event_from_ring_sample_execve_argv_and_uid() {
+            let mut blob = [0u8; EXECVE_ARGV_BLOB_LEN];
+            let a = b"/bin/sh\0";
+            blob[..a.len()].copy_from_slice(a);
+            let b = b"-c\0";
+            let off = EXECVE_ARG_MAX_LEN;
+            blob[off..off + b.len()].copy_from_slice(b);
+            let c = b"whoami\0";
+            let off2 = 2 * EXECVE_ARG_MAX_LEN;
+            blob[off2..off2 + c.len()].copy_from_slice(c);
+
+            let kernel = KernelMemoryEvent {
+                timestamp_ns: 1,
+                pid: 9,
+                tgid: 9,
+                syscall: 5,
+                args: [0x1111, 0x2222, 0, 0, 0, 0],
+                comm: *b"sh\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+            };
+            let sample = RingBufferSample {
+                kernel,
+                syscall_ret: 0,
+                uid: 0,
+                _reserved: 0,
+                layout_version: RING_SAMPLE_LAYOUT_VERSION,
+                execve_argv_blob: blob,
+            };
+            let mut bytes = [0u8; RingBufferSample::wire_size()];
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    (&sample as *const RingBufferSample).cast::<u8>(),
+                    bytes.as_mut_ptr(),
+                    bytes.len(),
+                );
+            }
+            let ev = MemoryEvent::from_bytes(&bytes).expect("ring sample");
+            assert_eq!(ev.event_type, EventType::Execve);
+            assert_eq!(ev.uid, 0);
+            assert_eq!(ev.execve_cmdline, "/bin/sh -c whoami");
         }
 
         /// Validates parsing of an all-zero raw kernel event for syscall id 1 (mmap with zero fields).

@@ -2,6 +2,9 @@ use std::{convert::TryFrom, fmt};
 
 use aegis_ebpf_common::{EventType, MemoryEvent, MemorySyscall, SYSCALL_ARG_COUNT};
 
+/// Fixed NUL-padded UTF-8 snapshot of `MemoryEvent::execve_cmdline` for C/Go/Python FFI (256 bytes).
+pub const RAW_EXECVE_CMDLINE_LEN: usize = 256;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RawMemoryEvent {
@@ -13,6 +16,10 @@ pub struct RawMemoryEvent {
     pub args: [u64; 6],
     pub cgroup_id: u64,
     pub comm: [u8; 16],
+    pub uid: u32,
+    pub _pad_uid: u32,
+    pub syscall_ret: i64,
+    pub execve_cmdline: [u8; RAW_EXECVE_CMDLINE_LEN],
 }
 
 impl From<&MemoryEvent> for RawMemoryEvent {
@@ -55,6 +62,13 @@ impl From<&MemoryEvent> for RawMemoryEvent {
             }
         };
 
+        let mut execve_cmdline = [0u8; RAW_EXECVE_CMDLINE_LEN];
+        if !event.execve_cmdline.is_empty() {
+            let bytes = event.execve_cmdline.as_bytes();
+            let n = bytes.len().min(RAW_EXECVE_CMDLINE_LEN - 1);
+            execve_cmdline[..n].copy_from_slice(&bytes[..n]);
+        }
+
         Self {
             timestamp_ns: event.timestamp_ns,
             tgid: event.tgid,
@@ -64,6 +78,10 @@ impl From<&MemoryEvent> for RawMemoryEvent {
             args,
             cgroup_id: u64::from(event.tgid),
             comm: event.comm,
+            uid: event.uid,
+            _pad_uid: 0,
+            syscall_ret: event.ret,
+            execve_cmdline,
         }
     }
 }
@@ -189,12 +207,14 @@ mod tests {
             timestamp_ns: 1_234_567,
             tgid: 42,
             pid: 77,
+            uid: 0,
             comm: *b"demo-proc\0\0\0\0\0\0\0",
             event_type: EventType::MprotectWX,
             addr: 0x1000,
             len: 0x2000,
             flags: 0x4,
             ret: 0,
+            execve_cmdline: String::new(),
         }
     }
 
@@ -216,29 +236,20 @@ mod tests {
 
     #[test]
     fn test_rawmemoryevent_layout() {
-        // C equivalent: sizeof(RawMemoryEvent) must equal 96
-        // uint64_t timestamp_ns (8) + uint32_t tgid (4) + uint32_t pid (4)
-        // + uint32_t syscall_id (4) + uint32_t _pad0 (4) + uint64_t args[6] (48)
-        // + uint64_t cgroup_id (8) + uint8_t comm[16] (16) = 96
-        assert_eq!(size_of::<RawMemoryEvent>(), 96);
         assert_eq!(align_of::<RawMemoryEvent>(), 8);
-
-        // uint64_t timestamp_ns -> offset 0, size 8
         assert_eq!(offset_of!(RawMemoryEvent, timestamp_ns), 0);
-        // uint32_t tgid -> offset 8, size 4
         assert_eq!(offset_of!(RawMemoryEvent, tgid), 8);
-        // uint32_t pid -> offset 12, size 4
         assert_eq!(offset_of!(RawMemoryEvent, pid), 12);
-        // uint32_t syscall_id -> offset 16, size 4
         assert_eq!(offset_of!(RawMemoryEvent, syscall_id), 16);
-        // uint32_t _pad0 -> offset 20, size 4
         assert_eq!(offset_of!(RawMemoryEvent, _pad0), 20);
-        // uint64_t args[6] -> offset 24, size 48
         assert_eq!(offset_of!(RawMemoryEvent, args), 24);
-        // uint64_t cgroup_id -> offset 72, size 8
         assert_eq!(offset_of!(RawMemoryEvent, cgroup_id), 72);
-        // uint8_t comm[16] -> offset 80, size 16
         assert_eq!(offset_of!(RawMemoryEvent, comm), 80);
+        assert_eq!(offset_of!(RawMemoryEvent, uid), 96);
+        assert_eq!(offset_of!(RawMemoryEvent, _pad_uid), 100);
+        assert_eq!(offset_of!(RawMemoryEvent, syscall_ret), 104);
+        assert_eq!(offset_of!(RawMemoryEvent, execve_cmdline), 112);
+        assert_eq!(size_of::<RawMemoryEvent>(), 112 + RAW_EXECVE_CMDLINE_LEN);
     }
 
     #[test]
@@ -348,8 +359,6 @@ mod layout_assertions {
 
     #[test]
     fn verify_rawmemoryevent_layout() {
-        // C equivalent: sizeof(RawMemoryEvent) must equal 96
-        assert_eq!(size_of::<RawMemoryEvent>(), 96);
         assert_eq!(align_of::<RawMemoryEvent>(), 8);
         assert_eq!(offset_of!(RawMemoryEvent, timestamp_ns), 0);
         assert_eq!(offset_of!(RawMemoryEvent, tgid), 8);
@@ -359,6 +368,8 @@ mod layout_assertions {
         assert_eq!(offset_of!(RawMemoryEvent, args), 24);
         assert_eq!(offset_of!(RawMemoryEvent, cgroup_id), 72);
         assert_eq!(offset_of!(RawMemoryEvent, comm), 80);
+        assert_eq!(offset_of!(RawMemoryEvent, uid), 96);
+        assert_eq!(size_of::<RawMemoryEvent>(), 112 + RAW_EXECVE_CMDLINE_LEN);
     }
 
     #[test]

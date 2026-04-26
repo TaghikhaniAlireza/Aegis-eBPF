@@ -505,12 +505,14 @@ mod tests {
             timestamp_ns,
             tgid,
             pid,
+            uid: 0,
             comm: [0; 16],
             event_type: EventType::Mmap,
             addr: 0x1000,
             len: 4096,
             flags: 0,
             ret: 0,
+            execve_cmdline: String::new(),
         }
     }
 

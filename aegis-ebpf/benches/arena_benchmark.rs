@@ -21,6 +21,10 @@ fn sample_event(seed: u32) -> RawMemoryEvent {
         args: [u64::from(seed); 6],
         cgroup_id: u64::from(seed),
         comm: [0; 16],
+        uid: 0,
+        _pad_uid: 0,
+        syscall_ret: 0,
+        execve_cmdline: [0; aegis_ebpf::ffi::types::RAW_EXECVE_CMDLINE_LEN],
     }
 }
 

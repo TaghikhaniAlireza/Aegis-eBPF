@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import enum
-from ctypes import Structure, c_uint32, c_uint64, c_uint8, c_int32, c_size_t
+from ctypes import Structure, c_int64, c_uint32, c_uint64, c_uint8, c_int32, c_size_t
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
@@ -42,6 +42,9 @@ def _check_arena_code(code: int, operation: str) -> None:
 # --- RawMemoryEvent (must match include/aegis.h) ---
 
 
+RAW_EXECVE_CMDLINE_LEN = 256
+
+
 class RawMemoryEvent(Structure):
     _pack_ = 8
     _fields_ = [
@@ -53,6 +56,10 @@ class RawMemoryEvent(Structure):
         ("args", c_uint64 * 6),
         ("cgroup_id", c_uint64),
         ("comm", c_uint8 * 16),
+        ("uid", c_uint32),
+        ("_pad_uid", c_uint32),
+        ("syscall_ret", c_int64),
+        ("execve_cmdline", c_uint8 * RAW_EXECVE_CMDLINE_LEN),
     ]
 
 
@@ -65,6 +72,9 @@ def raw_memory_event(
     args: Optional[Sequence[int]] = None,
     cgroup_id: int = 0,
     comm: Union[bytes, str] = b"",
+    uid: int = 0,
+    syscall_ret: int = 0,
+    execve_cmdline: Union[bytes, str] = b"",
 ) -> RawMemoryEvent:
     """Build a :class:`RawMemoryEvent` from Python values."""
     if args is None:
@@ -87,6 +97,12 @@ def raw_memory_event(
     ev.cgroup_id = cgroup_id
     for i in range(16):
         ev.comm[i] = data[i] if i < len(data) else 0
+    ev.uid = uid
+    ev._pad_uid = 0
+    ev.syscall_ret = syscall_ret
+    cmd = execve_cmdline.encode() if isinstance(execve_cmdline, str) else execve_cmdline
+    for i in range(RAW_EXECVE_CMDLINE_LEN):
+        ev.execve_cmdline[i] = cmd[i] if i < len(cmd) else 0
     return ev
 
 

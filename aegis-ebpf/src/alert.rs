@@ -34,8 +34,11 @@ pub type StandardizedEventCallback = Arc<dyn Fn(String) -> BoxFuture<'static, ()
 pub struct StandardizedEvent {
     pub timestamp: u64,
     pub pid: u32,
+    pub uid: u32,
     pub process_name: String,
     pub syscall_name: String,
+    /// Best-effort command line for `execve` (from eBPF argv snapshot); empty for other syscalls.
+    pub cmdline: String,
     pub arguments: Vec<String>,
     pub matched_rules: Vec<String>,
 }
@@ -58,10 +61,16 @@ fn format_syscall_arguments(ev: &aegis_ebpf_common::MemoryEvent) -> Vec<String> 
             format!("target_pid={}", ev.len),
             format!("data_ptr=0x{:x}", ev.addr),
         ],
-        EventType::Execve => vec![
-            format!("filename_ptr=0x{:x}", ev.addr),
-            format!("argv_ptr=0x{:x}", ev.len),
-        ],
+        EventType::Execve => {
+            let mut v = vec![
+                format!("filename_ptr=0x{:x}", ev.addr),
+                format!("argv_ptr=0x{:x}", ev.len),
+            ];
+            if !ev.execve_cmdline.is_empty() {
+                v.push(format!("argv_snapshot={}", ev.execve_cmdline));
+            }
+            v
+        }
         EventType::Openat => vec![
             format!("pathname_ptr=0x{:x}", ev.addr),
             format!("open_flags=0x{:x}", ev.len),
@@ -88,8 +97,10 @@ pub fn build_standardized_event(
     StandardizedEvent {
         timestamp: ev.inner.timestamp_ns,
         pid: ev.inner.pid,
+        uid: ev.inner.uid,
         process_name: comm_string(&ev.inner.comm),
         syscall_name: syscall_name_for_event(ev.inner.event_type).to_string(),
+        cmdline: ev.inner.execve_cmdline.clone(),
         arguments: format_syscall_arguments(&ev.inner),
         matched_rules: matched_rule_ids.to_vec(),
     }
@@ -156,12 +167,14 @@ mod tests {
             timestamp_ns: 7,
             tgid: 42,
             pid: 24,
+            uid: 0,
             comm: *b"unit-test\0\0\0\0\0\0\0",
             event_type,
             addr: 0x1000,
             len: 4096,
             flags,
             ret: 0,
+            execve_cmdline: String::new(),
         }
     }
 

@@ -1,9 +1,15 @@
 #![no_std]
 #![no_main]
 
-use aegis_ebpf_common::{MemoryEvent, MemorySyscall, SYSCALL_ARG_COUNT, TASK_COMM_LEN};
+use aegis_ebpf_common::{
+    EXECVE_ARG_MAX_LEN, EXECVE_ARGC_CAPTURE, EXECVE_ARGV_BLOB_LEN, KernelMemoryEvent,
+    MemorySyscall, RING_SAMPLE_LAYOUT_VERSION, RingBufferSample, SYSCALL_ARG_COUNT, TASK_COMM_LEN,
+};
 use aya_ebpf::{
-    helpers::{bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_ktime_get_ns},
+    helpers::{
+        bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns,
+        bpf_probe_read_user, bpf_probe_read_user_str_bytes,
+    },
     macros::{map, tracepoint},
     maps::{LruHashMap, RingBuf},
     programs::TracePointContext,
@@ -20,9 +26,16 @@ const RATE_LIMIT_INTERVAL_NS: u64 = 100_000_000; // 100ms per PID
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(RINGBUF_SIZE_BYTES, 0);
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PendingEvent {
+    kernel: KernelMemoryEvent,
+    execve_argv_blob: [u8; EXECVE_ARGV_BLOB_LEN],
+}
+
 #[allow(non_upper_case_globals)]
 #[map]
-static pending_syscalls: LruHashMap<u64, MemoryEvent> =
+static pending_syscalls: LruHashMap<u64, PendingEvent> =
     LruHashMap::with_max_entries(PENDING_SYSCALLS_MAX_ENTRIES, 0);
 
 #[map]
@@ -54,6 +67,26 @@ fn read_syscall_args(ctx: &TracePointContext) -> [u64; SYSCALL_ARG_COUNT] {
 }
 
 #[inline(always)]
+fn capture_execve_argv(argv_ptr: u64, out_blob: &mut [u8; EXECVE_ARGV_BLOB_LEN]) {
+    if argv_ptr == 0 {
+        return;
+    }
+    let argv = argv_ptr as *const u64;
+    for i in 0..EXECVE_ARGC_CAPTURE {
+        let arg_user_ptr = match unsafe { bpf_probe_read_user(argv.add(i)) } {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+        if arg_user_ptr == 0 {
+            break;
+        }
+        let slot_off = i * EXECVE_ARG_MAX_LEN;
+        let slot = &mut out_blob[slot_off..slot_off + EXECVE_ARG_MAX_LEN];
+        let _ = unsafe { bpf_probe_read_user_str_bytes(arg_user_ptr as *const u8, slot) };
+    }
+}
+
+#[inline(always)]
 fn store_pending_event(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
     let pid_tgid = bpf_get_current_pid_tgid();
     let tgid = (pid_tgid >> 32) as u32;
@@ -77,16 +110,25 @@ fn store_pending_event(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
     }
 
     let comm = bpf_get_current_comm().unwrap_or([0; TASK_COMM_LEN]);
-    let event = MemoryEvent {
+    let args = read_syscall_args(ctx);
+    let mut execve_argv_blob = [0u8; EXECVE_ARGV_BLOB_LEN];
+    if syscall == MemorySyscall::Execve {
+        capture_execve_argv(args[1], &mut execve_argv_blob);
+    }
+    let kernel = KernelMemoryEvent {
         timestamp_ns: now_ns,
         pid: pid_tgid as u32,
         tgid,
         syscall: syscall as u32,
-        args: read_syscall_args(ctx),
+        args,
         comm,
     };
+    let pending = PendingEvent {
+        kernel,
+        execve_argv_blob,
+    };
 
-    if let Err(err) = pending_syscalls.insert(pid_tgid, event, 0) {
+    if let Err(err) = pending_syscalls.insert(pid_tgid, pending, 0) {
         warn!(ctx, "pending syscall insert failed: {}", err);
         return 1;
     }
@@ -98,8 +140,8 @@ fn store_pending_event(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
 fn emit_pending_event_on_success(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
     let pid_tgid = bpf_get_current_pid_tgid();
     let ret = unsafe { ctx.read_at::<i64>(16).unwrap_or(-1) };
-    let event = unsafe { pending_syscalls.get(&pid_tgid).copied() };
-    let Some(mut event) = event else { return 0 };
+    let pending = unsafe { pending_syscalls.get(&pid_tgid).copied() };
+    let Some(mut pending) = pending else { return 0 };
 
     // Ptrace / openat: emit on exit even when the syscall fails (e.g. EPERM) so user-space rules
     // can detect attach attempts and sensitive-path opens.
@@ -113,14 +155,23 @@ fn emit_pending_event_on_success(ctx: &TracePointContext, syscall: MemorySyscall
         return 0;
     }
 
-    if syscall == MemorySyscall::Mprotect && (event.args[2] & PROT_EXEC) == 0 {
+    if syscall == MemorySyscall::Mprotect && (pending.kernel.args[2] & PROT_EXEC) == 0 {
         let _ = pending_syscalls.remove(&pid_tgid);
         return 0;
     }
 
-    event.syscall = syscall as u32;
-    if let Some(mut entry) = EVENTS.reserve::<MemoryEvent>(0) {
-        entry.write(event);
+    pending.kernel.syscall = syscall as u32;
+    let uid = bpf_get_current_uid_gid() as u32;
+    let sample = RingBufferSample {
+        kernel: pending.kernel,
+        syscall_ret: ret,
+        uid,
+        _reserved: 0,
+        layout_version: RING_SAMPLE_LAYOUT_VERSION,
+        execve_argv_blob: pending.execve_argv_blob,
+    };
+    if let Some(mut entry) = EVENTS.reserve::<RingBufferSample>(0) {
+        entry.write(sample);
         entry.submit(0);
     } else {
         warn!(ctx, "ring buffer reserve failed");

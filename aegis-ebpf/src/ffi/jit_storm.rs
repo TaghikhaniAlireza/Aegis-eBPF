@@ -35,6 +35,10 @@ fn mock_event(seq: u32) -> RawMemoryEvent {
         args: [u64::from(seq); 6],
         cgroup_id: u64::from(seq),
         comm: [0; 16],
+        uid: 0,
+        _pad_uid: 0,
+        syscall_ret: 0,
+        execve_cmdline: [0; crate::ffi::types::RAW_EXECVE_CMDLINE_LEN],
     }
 }
 

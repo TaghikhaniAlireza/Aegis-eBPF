@@ -111,12 +111,14 @@ mod tests {
                 timestamp_ns,
                 tgid,
                 pid: tgid,
+                uid: 0,
                 comm: [0; 16],
                 event_type,
                 addr,
                 len,
                 flags,
                 ret: 0,
+                execve_cmdline: String::new(),
             },
             metadata: None,
         }
@@ -324,12 +326,14 @@ mod tests {
                     timestamp_ns: ts,
                     tgid: 500,
                     pid: 500,
+                    uid: 0,
                     comm: [0; 16],
                     event_type: EventType::MprotectWX,
                     addr: 0x1000 + ts,
                     len: 4096,
                     flags: super::PROT_EXEC,
                     ret: 0,
+                    execve_cmdline: String::new(),
                 })
                 .await
                 .expect("send should succeed");

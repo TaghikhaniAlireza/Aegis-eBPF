@@ -68,6 +68,11 @@ pub struct Conditions {
     /// Intended for `syscall: execve` rules (e.g. detect `whoami` in argv).
     #[serde(default)]
     pub argv_contains: Vec<String>,
+    /// If set, effective UID from the event must match (from eBPF `bpf_get_current_uid_gid` at syscall exit).
+    pub uid: Option<u32>,
+    /// At least one substring must appear in the execve command line (prefers eBPF `execve_cmdline`, else `/proc` cmdline).
+    #[serde(default)]
+    pub cmdline_contains_any: Vec<String>,
     /// Regex matched against the resolved pathname for `syscall: openat` (via `process_vm_readv` on the tracee).
     #[serde(default)]
     pub pathname_pattern: Option<String>,
@@ -143,11 +148,17 @@ impl Rule {
             }
         }
 
+        if let Some(expected_uid) = self.conditions.uid
+            && event.inner.uid != expected_uid
+        {
+            return false;
+        }
+
         if !self.conditions.argv_contains.is_empty() {
             if event.inner.event_type != EventType::Execve {
                 return false;
             }
-            let Some(cmdline) = read_proc_cmdline_flat(event.inner.pid) else {
+            let Some(cmdline) = execve_cmdline_haystack(event) else {
                 return false;
             };
             if !self
@@ -155,6 +166,23 @@ impl Rule {
                 .argv_contains
                 .iter()
                 .all(|needle| cmdline.contains(needle.as_str()))
+            {
+                return false;
+            }
+        }
+
+        if !self.conditions.cmdline_contains_any.is_empty() {
+            if event.inner.event_type != EventType::Execve {
+                return false;
+            }
+            let Some(cmdline) = execve_cmdline_haystack(event) else {
+                return false;
+            };
+            if !self
+                .conditions
+                .cmdline_contains_any
+                .iter()
+                .any(|needle| cmdline.contains(needle.as_str()))
             {
                 return false;
             }
@@ -266,6 +294,20 @@ pub(crate) fn validate_rule(rule: &Rule) -> Result<(), RuleError> {
         }
     }
 
+    if !rule.conditions.cmdline_contains_any.is_empty() {
+        let ok = rule
+            .conditions
+            .syscall
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case("execve"))
+            .unwrap_or(false);
+        if !ok {
+            return Err(RuleError::InvalidCondition(
+                "cmdline_contains_any requires syscall: execve".into(),
+            ));
+        }
+    }
+
     if rule.conditions.pathname_pattern.is_some() {
         let ok = rule
             .conditions
@@ -372,6 +414,13 @@ fn is_supported_syscall(syscall: &str) -> bool {
     )
 }
 
+fn execve_cmdline_haystack(event: &EnrichedEvent) -> Option<String> {
+    if !event.inner.execve_cmdline.is_empty() {
+        return Some(event.inner.execve_cmdline.clone());
+    }
+    read_proc_cmdline_flat(event.inner.pid)
+}
+
 fn read_proc_cmdline_flat(pid: u32) -> Option<String> {
     let path = format!("/proc/{pid}/cmdline");
     let raw = fs::read(&path).ok()?;
@@ -473,12 +522,14 @@ mod tests {
                 timestamp_ns: 1,
                 tgid: 42,
                 pid: 42,
+                uid: 0,
                 comm: [0; 16],
                 event_type,
                 addr: 0x1000,
                 len,
                 flags,
                 ret: 0,
+                execve_cmdline: String::new(),
             },
             metadata: None,
         }
@@ -501,6 +552,37 @@ rules:
         assert_eq!(rule.id, "MEM-001");
         assert_eq!(rule.name, "Example");
         assert_eq!(rule.severity, Severity::High);
+    }
+
+    #[test]
+    fn uid_and_cmdline_contains_any_for_execve() {
+        let rule = Rule {
+            id: "R-UID-CMD".into(),
+            name: "root sensitive".into(),
+            severity: Severity::High,
+            description: "desc".into(),
+            conditions: Conditions {
+                syscall: Some("execve".into()),
+                uid: Some(0),
+                cmdline_contains_any: vec!["whoami".into(), "cat /etc/shadow".into()],
+                ..Default::default()
+            },
+            stateful: None,
+            cgroup_regex: None,
+            process_name_regex: None,
+            pathname_regex: None,
+        };
+        let mut ev = fake_enriched_event(EventType::Execve, 0, 0);
+        ev.inner.uid = 0;
+        ev.inner.execve_cmdline = "/bin/sh -c whoami".into();
+        assert!(rule.matches(&ev));
+
+        ev.inner.uid = 1;
+        assert!(!rule.matches(&ev));
+
+        ev.inner.uid = 0;
+        ev.inner.execve_cmdline = "/bin/true".into();
+        assert!(!rule.matches(&ev));
     }
 
     #[test]
@@ -709,12 +791,14 @@ rules:
                 timestamp_ns: 1,
                 tgid: 77,
                 pid: 77,
+                uid: 0,
                 comm: [0; 16],
                 event_type: EventType::MprotectWX,
                 addr: 0x1000,
                 len: 4096,
                 flags: PROT_EXEC,
                 ret: 0,
+                execve_cmdline: String::new(),
             })
             .await
             .expect("send should succeed");
@@ -757,12 +841,14 @@ rules:
                 timestamp_ns: 99,
                 tgid: 1,
                 pid: 2,
+                uid: 0,
                 comm,
                 event_type: EventType::Mmap,
                 addr: 0x1000,
                 len: 4096,
                 flags: 0,
                 ret: 0,
+                execve_cmdline: String::new(),
             },
             metadata: None,
         };

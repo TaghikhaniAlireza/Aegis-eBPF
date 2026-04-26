@@ -10,6 +10,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+// Fixed NUL-padded UTF-8 snapshot of `MemoryEvent::execve_cmdline` for C/Go/Python FFI (256 bytes).
+#define RAW_EXECVE_CMDLINE_LEN 256
+
 #define PROT_READ 1
 
 #define PROT_WRITE 2
@@ -49,6 +52,10 @@ typedef struct RawMemoryEvent {
     uint64_t args[6];
     uint64_t cgroup_id;
     uint8_t comm[16];
+    uint32_t uid;
+    uint32_t _pad_uid;
+    int64_t syscall_ret;
+    uint8_t execve_cmdline[RAW_EXECVE_CMDLINE_LEN];
 } RawMemoryEvent;
 
 typedef struct CAlert {
