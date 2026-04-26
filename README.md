@@ -1,5 +1,7 @@
 # Aegis-eBPF
 
+**The missing piece in real-time detection of code injection, memory anomalies, and suspicious behavior across Linux, cloud-native deployments, and Kubernetes ecosystems, with multi-language support.**
+
 **Aegis-eBPF** is a high-performance, production-oriented **Linux eBPF** security and monitoring SDK. The core is written in **Rust** (userspace + [`aya`](https://github.com/aya-rs/aya) eBPF programs) with **CO-RE** (Compile Once — Run Everywhere) so a single BPF object can load across supported kernels. **Go** and **Python** bindings provide a stable **C ABI** (`libaegis_ebpf.so`) for integrating memory-event pipelines and protobuf alerts into your stack.
 
 ---
