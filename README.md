@@ -6,10 +6,8 @@
 
 ## Badges
 
-<!-- Replace OWNER/REPO with your GitHub path, e.g. TaghikhaniAlireza/Aegis-eBPF -->
-
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/OWNER/REPO?label=release&logo=github)](https://github.com/OWNER/REPO/releases)
+[![CI](https://github.com/TaghikhaniAlireza/Aegis-eBPF/actions/workflows/ci.yml/badge.svg)](https://github.com/TaghikhaniAlireza/Aegis-eBPF/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/TaghikhaniAlireza/Aegis-eBPF?label=release&logo=github)](https://github.com/TaghikhaniAlireza/Aegis-eBPF/releases)
 [![License](https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0%20%7C%20GPL--2.0%20(eBPF)-blue.svg)](./LICENSE-MIT)
 
 ---
