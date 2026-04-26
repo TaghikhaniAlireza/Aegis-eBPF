@@ -1,0 +1,105 @@
+# =============================================================================
+# Aegis-eBPF — Continuous Integration (main)
+# =============================================================================
+# This workflow builds the workspace (including the nested eBPF program via
+# `aegis-ebpf/build.rs` + `aya_build`) and runs the Rust test suite under sudo
+# so integration tests that load BPF objects can obtain CAP_BPF / root behavior
+# matching local `.cargo/linux-test-runner.sh`.
+#
+# Notes:
+# - `cargo build` compiles the eBPF ELF (rustc + bpf-linker). The in-kernel
+#   **verifier** runs at `BPF_PROG_LOAD` time, which is exercised by tests that
+#   load the object (some are `#[ignore]` on restricted kernels; we run them
+#   on GitHub-hosted Ubuntu where BPF tracepoints are typically available).
+# - If this job becomes flaky on a future runner image, narrow or gate the
+#   `--include-ignored` step (see comments on that step).
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-and-test:
+    name: Build and test (eBPF + userspace)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # --- Rust: stable is the primary host toolchain; nightly + rust-src is
+      #     required for `aya_build` / `-Z build-std` when compiling `aegis-ebpf-ebpf`.
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, rust-src
+
+      - name: Install nightly Rust (eBPF / build-std)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      # --- Cargo cache: registry + git dependencies + `target/` (speeds rebuilds).
+      - name: Cache Cargo home and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # --- Native packages: LLVM/clang toolchain for libbpf headers + bpf-linker,
+      #     libelf/zlib for linking, kernel UAPI headers, bpftool for optional introspection.
+      - name: Install eBPF and build dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            llvm \
+            libelf-dev \
+            zlib1g-dev \
+            linux-headers-generic \
+            "linux-headers-$(uname -r)" \
+            bpftool \
+            pkg-config \
+            build-essential \
+            protobuf-compiler
+          # `linux-headers-generic` tracks the distro default; headers matching
+          # `uname -r` are safest for BPF UAPI on the exact runner kernel.
+
+      # --- bpf-linker: required by `aegis-ebpf-ebpf/build.rs` (undeclared binary dep).
+      #     Installed to ~/.cargo/bin so nested `cargo` from `aya_build` can invoke it.
+      - name: Install bpf-linker
+        run: cargo install bpf-linker --version 0.10.3
+
+      # --- Build: compiles workspace members and triggers eBPF build via `build.rs`.
+      #     Any failure here (including eBPF compile / link errors) fails the job.
+      - name: Build workspace
+        run: cargo build --workspace --all-features --verbose
+
+      # --- Tests under root: `.cargo/linux-test-runner.sh` wraps test binaries with
+      #     `sudo -E` so `CAP_BPF` is available for loader / verifier integration tests.
+      #
+      #     Preserve PATH + rustup dirs so sudo resolves the same `cargo` / toolchains
+      #     as the non-root job (rustup proxies live on PATH).
+      #
+      #     `--include-ignored`: runs eBPF integration tests that are ignored by default
+      #     (e.g. restricted microVMs). On ubuntu-latest this usually exercises
+      #     `BPF_PROG_LOAD` / verifier paths — if the verifier rejects the program, tests fail.
+      #
+      #     If your fork runs on runners without full BPF tracepoint support, remove
+      #     `--include-ignored` or split into a separate optional job.
+      - name: Run tests (sudo, full BPF suite)
+        run: |
+          set -euxo pipefail
+          sudo -E env \
+            "PATH=${PATH}" \
+            "HOME=${HOME}" \
+            "RUSTUP_HOME=${RUSTUP_HOME:-${HOME}/.rustup}" \
+            "CARGO_HOME=${CARGO_HOME:-${HOME}/.cargo}" \
+            cargo test --workspace --all-features --verbose -- --include-ignored
