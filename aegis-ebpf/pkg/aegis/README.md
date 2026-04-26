@@ -35,6 +35,7 @@ The cgo linker uses `-L../../../target/debug` relative to this package directory
 - **`Arena`** (`arena_handle.go`) — `NewArena`, `TryPush` / `TryPop`, explicit **`Close()`**; `sync.Once` ensures **`aegis_arena_free`** runs once even if **`Close`** races a **`SetFinalizer`** cleanup.
 - **`AlertChannelHandle`** (`alert_handle.go`) — same pattern for **`aegis_alert_channel_*`** without background goroutines.
 - **Protobuf integrity** — `FeedTestAlert()` calls Rust **`aegis_alert_channel_feed_test_alert`** to enqueue a maximal-field `aegis.Alert`; see **`alert_integrity_test.go`** (`TestProtobufAlertIntegrity`).
+- **Throughput / JIT storm** — `Arena.SimulateJitStorm` wraps **`aegis_simulate_jit_storm`** (Rust scoped producer/consumer). See **`throughput_stress_test.go`**.
 
 ## Usage
 

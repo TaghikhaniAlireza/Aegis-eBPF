@@ -47,6 +47,17 @@ def load_lib() -> ctypes.CDLL:
     lib.aegis_arena_capacity.argtypes = (c_void_p,)
     lib.aegis_arena_capacity.restype = c_size_t
 
+    class JitStormStats(ctypes.Structure):
+        _fields_ = [
+            ("requested", ctypes.c_uint64),
+            ("pushed", ctypes.c_uint64),
+            ("popped", ctypes.c_uint64),
+            ("full_retries", ctypes.c_uint64),
+        ]
+
+    lib.aegis_simulate_jit_storm.argtypes = (c_void_p, ctypes.c_uint32, ctypes.POINTER(JitStormStats))
+    lib.aegis_simulate_jit_storm.restype = c_int32
+
     lib.aegis_alert_channel_new.argtypes = (c_size_t,)
     lib.aegis_alert_channel_new.restype = c_void_p
 
