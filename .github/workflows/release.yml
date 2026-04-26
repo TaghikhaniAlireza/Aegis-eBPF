@@ -1,0 +1,90 @@
+# =============================================================================
+# Aegis-eBPF — GitHub Release (FFI artifacts)
+# =============================================================================
+# Pushing a tag `v*` builds the release `libaegis_ebpf.so`, bundles it with `aegis.h`,
+# and publishes a GitHub Release with `aegis-ebpf-linux-amd64.tar.gz`.
+#
+# `aegis-ebpf` requires nightly + `rust-src` + `bpf-linker` for the nested eBPF build (same as CI).
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish release assets
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install nightly Rust (eBPF / build-std)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install eBPF build dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            llvm \
+            libelf-dev \
+            zlib1g-dev \
+            gcc-multilib \
+            build-essential \
+            pkg-config \
+            protobuf-compiler \
+            linux-headers-generic \
+            "linux-headers-$(uname -r)"
+
+      - name: Install bpf-linker
+        run: cargo install bpf-linker --version 0.10.3
+
+      - name: Build release workspace
+        run: cargo build --release --verbose
+
+      - name: Stage FFI artifacts and create tarball
+        run: |
+          set -euxo pipefail
+          STAGE="${RUNNER_TEMP}/aegis-ebpf-release"
+          rm -rf "${STAGE}"
+          mkdir -p "${STAGE}"
+
+          cp -v target/release/libaegis_ebpf.so "${STAGE}/"
+
+          HEADER="${GITHUB_WORKSPACE}/aegis-ebpf/include/aegis.h"
+          if [[ -f "${HEADER}" ]]; then
+            cp -v "${HEADER}" "${STAGE}/"
+          else
+            echo "::warning::aegis.h not found at ${HEADER}; tarball will contain only the .so"
+          fi
+
+          tar -czvf "${GITHUB_WORKSPACE}/aegis-ebpf-linux-amd64.tar.gz" -C "${STAGE}" .
+          ls -la "${GITHUB_WORKSPACE}/aegis-ebpf-linux-amd64.tar.gz"
+          tar -tzvf "${GITHUB_WORKSPACE}/aegis-ebpf-linux-amd64.tar.gz"
+
+      - name: Create GitHub Release and upload asset
+        uses: softprops/action-gh-release@v2
+        with:
+          # Tag that triggered the workflow → release name / target
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: aegis-ebpf-linux-amd64.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
