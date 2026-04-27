@@ -2,9 +2,9 @@
 #![no_main]
 
 use aegis_ebpf_common::{
-    EXECVE_SCRATCH_LEN, KernelMemoryEvent, MemorySyscall, OPENAT_PATH_MAX_LEN,
-    RING_PAYLOAD_BLOB_LEN, RING_SAMPLE_LAYOUT_VERSION, RingBufferSample, SYSCALL_ARG_COUNT,
-    TASK_COMM_LEN,
+    EXECVE_ARGV_MAX_ARGS, EXECVE_SCRATCH_LEN, KernelMemoryEvent, MemorySyscall,
+    OPENAT_PATH_MAX_LEN, RING_PAYLOAD_BLOB_LEN, RING_SAMPLE_LAYOUT_VERSION, RingBufferSample,
+    SYSCALL_ARG_COUNT, TASK_COMM_LEN,
 };
 use aya_ebpf::{
     helpers::{
@@ -93,7 +93,7 @@ fn capture_execve_argv_into_scratch(argv_ptr: u64) -> usize {
     let argv = argv_ptr as *const u64;
     let mut off = 0usize;
 
-    for i in 0..256u32 {
+    for i in 0..EXECVE_ARGV_MAX_ARGS {
         let arg_user_ptr = match unsafe { bpf_probe_read_user(argv.add(i as usize)) } {
             Ok(p) => p,
             Err(_) => break,

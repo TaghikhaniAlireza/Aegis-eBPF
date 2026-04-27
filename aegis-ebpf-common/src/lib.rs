@@ -19,6 +19,10 @@ pub const OPENAT_PATH_MAX_LEN: usize = 64;
 /// Max bytes for concatenated `execve` argv (space-separated) in the ring buffer / scratch path.
 pub const EXECVE_SCRATCH_LEN: usize = 4096;
 
+/// Max number of `argv[]` pointers the eBPF program walks when building the execve cmdline.
+/// Keep this modest: each iteration adds verifier complexity; 64 args is enough for realistic shells and attacks.
+pub const EXECVE_ARGV_MAX_ARGS: u32 = 64;
+
 /// One shared byte buffer in the ring sample: execve fills with joined argv (NUL-padded); openat uses prefix only.
 pub const RING_PAYLOAD_BLOB_LEN: usize = const_max(EXECVE_SCRATCH_LEN, OPENAT_PATH_MAX_LEN);
 

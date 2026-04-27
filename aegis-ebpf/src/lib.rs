@@ -183,9 +183,9 @@ fn attach_syscall_tracepoint(
         .with_context(|| format!("eBPF program `{program_name}` not found in loaded object"))?
         .try_into()
         .with_context(|| format!("program `{program_name}` is not a tracepoint"))?;
-    program.load().with_context(|| {
-        format!("failed to load eBPF program `{program_name}` (verifier/kernel)")
-    })?;
+    program
+        .load()
+        .with_context(|| format!("failed to load eBPF program `{program_name}`"))?;
     program
         .attach("syscalls", tracepoint_name)
         .with_context(|| {
