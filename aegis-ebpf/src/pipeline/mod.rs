@@ -80,7 +80,7 @@ pub enum PipelineError {
 impl fmt::Display for PipelineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SensorStartFailed(err) => write!(f, "failed to start sensor: {err}"),
+            Self::SensorStartFailed(err) => write!(f, "failed to start sensor: {err:#}"),
             Self::RuleLoadFailed(err) => write!(f, "failed to load rules: {err}"),
         }
     }

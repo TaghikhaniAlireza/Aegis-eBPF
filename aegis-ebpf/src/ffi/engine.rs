@@ -112,7 +112,7 @@ pub extern "C" fn aegis_start_pipeline() -> i32 {
             {
                 Ok(h) => h,
                 Err(e) => {
-                    tracing::error!("aegis_start_pipeline: {e}");
+                    tracing::error!("aegis_start_pipeline: {e:#}");
                     return;
                 }
             };
