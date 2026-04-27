@@ -196,3 +196,73 @@ suppressions:
       process_name_pattern: "^examples$"
       flags_contains: ["MAP_ANONYMOUS"]
       flags_excludes: ["PROT_EXEC"]
+
+  # --- Full JIT stack: RWX mprotect (matches rules that look for PROT_EXEC+PROT_WRITE on mprotect) ---
+  # Note: kernel `comm` is ≤15 chars and may be truncated (e.g. `chromium-brows`); extend patterns as needed.
+  - id: "SUPP_JIT_GNOME_SHELL_MPROTECT_RWX"
+    name: "gnome-shell full RWX mprotect (Mutter/Clutter JIT)"
+    description: "Compositor JIT uses anonymous RW→RWX transitions; suppress SIM_A_RWX-style noise for this task."
+    conditions:
+      syscall: "mprotect"
+      process_name_pattern: "^gnome-shell$"
+      flags_contains: ["PROT_READ", "PROT_WRITE", "PROT_EXEC"]
+
+  - id: "SUPP_JIT_CHROMIUM_FAMILY_MPROTECT_RWX"
+    name: "Chromium/Electron/V8 family RWX mprotect"
+    description: "Browser renderer & helper processes JIT WebAssembly / JS."
+    conditions:
+      syscall: "mprotect"
+      process_name_pattern: "^(chrome|chrom|Chromium|chromium|electron|msedge|Microsoft\\x20E|QtWebEngine)"
+      flags_contains: ["PROT_READ", "PROT_WRITE", "PROT_EXEC"]
+
+  - id: "SUPP_JIT_FIREFOX_FAMILY_MPROTECT_RWX"
+    name: "Firefox / Gecko RWX mprotect"
+    description: "SpiderMonkey JIT and WebGPU/content helpers (comm names vary by version)."
+    conditions:
+      syscall: "mprotect"
+      process_name_pattern: "^(firefox|Mozilla\\x20Thr|Socket\\x20Cont|RDD\\x20Process|Web\\x20Content)"
+      flags_contains: ["PROT_READ", "PROT_WRITE", "PROT_EXEC"]
+
+  - id: "SUPP_JIT_MANAGED_RUNTIMES_MPROTECT_RWX"
+    name: "Node.js / JVM / Ruby / PHP JIT RWX mprotect"
+    description: "Typical JIT tiers for managed language VMs on servers and desktops."
+    conditions:
+      syscall: "mprotect"
+      process_name_pattern: "^(node|nodejs|java|javaw|beam\\.smp|ruby|ruby\\.bin|php|php\\.bin|dotnet|mono-sgen)"
+      flags_contains: ["PROT_READ", "PROT_WRITE", "PROT_EXEC"]
+
+  # --- Trusted anonymous mmap churn (large RW heaps, still non-exec in flags field) ---
+  - id: "SUPP_JIT_NODE_MAP_ANON_RW"
+    name: "Node.js anonymous heap maps"
+    description: "V8 allocates large MAP_PRIVATE|MAP_ANONYMOUS regions (non-exec bit in mmap prot)."
+    conditions:
+      syscall: "mmap"
+      process_name_pattern: "^node$"
+      flags_contains: ["MAP_ANONYMOUS"]
+      flags_excludes: ["PROT_EXEC"]
+
+  - id: "SUPP_JIT_JAVA_MAP_ANON_RW"
+    name: "JVM anonymous heap maps"
+    description: "HotSpot / OpenJDK anonymous mappings during startup and GC arenas."
+    conditions:
+      syscall: "mmap"
+      process_name_pattern: "^java$"
+      flags_contains: ["MAP_ANONYMOUS"]
+      flags_excludes: ["PROT_EXEC"]
+
+  # --- Desktop service daemons (locale, icons, caches) — narrow path prefixes ---
+  - id: "SUPP_DBUS_SESSION_OPENAT"
+    name: "DBus session helper reads"
+    description: "Icon/mime/XDG document portal paths (tighten if you need stricter policy)."
+    conditions:
+      syscall: "openat"
+      process_name_pattern: "^(dbus-daemon|xdg-document|gvfs)"
+      pathname_pattern: ".*/(usr/share/(icons|mime|glib-2.0)(/|$)|run/user/[0-9]+/doc($|/))"
+
+  - id: "SUPP_NETWORKMANAGER_OPENAT"
+    name: "NetworkManager state reads"
+    description: "NM polls lease and config paths."
+    conditions:
+      syscall: "openat"
+      process_name_pattern: "^NetworkManager$"
+      pathname_pattern: ".*/(run/NetworkManager|etc/resolv\\.conf|proc/sys/net/.*)$"
