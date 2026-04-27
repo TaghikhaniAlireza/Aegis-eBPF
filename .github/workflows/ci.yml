@@ -281,7 +281,12 @@ jobs:
           cargo build -p aegis-ebpf --features prometheus --verbose
           cargo test -p aegis-ebpf --features prometheus --test observability_integration --verbose
 
+      # `ebpf_overhead_bench` compares multiplicative slowdown vs baseline; debug builds + noisy
+      # GitHub runners (esp. ubuntu-22.04) often land ~3.2–3.5× (see issue: margin over 3.0× cap).
+      # Keep stricter defaults locally; relax only for CI via env (see tests/ebpf_overhead_bench.rs).
       - name: Run tests (sudo, full BPF suite)
+        env:
+          AEGIS_MPROTECT_SLOWDOWN_MAX: "4"
         run: |
           set -euxo pipefail
           sudo -E env \
@@ -289,4 +294,5 @@ jobs:
             "HOME=${HOME}" \
             "RUSTUP_HOME=${RUSTUP_HOME:-${HOME}/.rustup}" \
             "CARGO_HOME=${CARGO_HOME:-${HOME}/.cargo}" \
+            "AEGIS_MPROTECT_SLOWDOWN_MAX=${AEGIS_MPROTECT_SLOWDOWN_MAX}" \
             cargo test --workspace --verbose -- --include-ignored
