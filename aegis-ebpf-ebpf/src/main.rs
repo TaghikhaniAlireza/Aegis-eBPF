@@ -80,10 +80,6 @@ fn zero_payload_blob(out: &mut [u8; RING_PAYLOAD_BLOB_LEN]) {
     }
 }
 
-fn should_rate_limit(syscall: MemorySyscall) -> bool {
-    syscall == MemorySyscall::Mmap
-}
-
 fn read_syscall_args(ctx: &TracePointContext) -> [u64; SYSCALL_ARG_COUNT] {
     [
         unsafe { ctx.read_at::<u64>(16).unwrap_or(0) },
@@ -143,7 +139,18 @@ fn capture_openat_path_into_scratch(path_ptr: u64) {
     };
 }
 
-fn store_pending_event(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
+fn clear_scratch_payload() {
+    if let Some(ptr) = SCRATCH_ARGV.get_ptr_mut(0) {
+        zero_scratch_buf(unsafe { &mut *ptr });
+    }
+}
+
+/// Per-syscall `sys_enter_*` bodies must **not** share a helper that passes large structs or many
+/// registers — `bpf-linker` rejects BPF-to-BPF calls with stack arguments. Duplicate the small
+/// pending-map insert tail in each `store_pending_event_for_*` instead.
+
+#[inline(never)]
+fn store_pending_event_for_mmap(ctx: &TracePointContext) -> u32 {
     let pid_tgid = bpf_get_current_pid_tgid();
     let tgid = (pid_tgid >> 32) as u32;
 
@@ -152,29 +159,149 @@ fn store_pending_event(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
     }
 
     let now_ns = unsafe { bpf_ktime_get_ns() };
-    if should_rate_limit(syscall) {
-        let last_ts = unsafe { RATE_LIMIT_LAST_TS.get(&tgid).copied().unwrap_or(0) };
+    let last_ts = unsafe { RATE_LIMIT_LAST_TS.get(&tgid).copied().unwrap_or(0) };
 
-        if now_ns.saturating_sub(last_ts) < RATE_LIMIT_INTERVAL_NS {
-            let prev = unsafe { RATE_LIMITED_COUNT.get(&tgid).copied().unwrap_or(0) };
-            let next = prev.saturating_add(1);
-            let _ = RATE_LIMITED_COUNT.insert(&tgid, &next, 0);
-            return 0;
-        }
-
-        let _ = RATE_LIMIT_LAST_TS.insert(&tgid, &now_ns, 0);
+    if now_ns.saturating_sub(last_ts) < RATE_LIMIT_INTERVAL_NS {
+        let prev = unsafe { RATE_LIMITED_COUNT.get(&tgid).copied().unwrap_or(0) };
+        let next = prev.saturating_add(1);
+        let _ = RATE_LIMITED_COUNT.insert(&tgid, &next, 0);
+        return 0;
     }
+
+    let _ = RATE_LIMIT_LAST_TS.insert(&tgid, &now_ns, 0);
 
     let comm = bpf_get_current_comm().unwrap_or([0; TASK_COMM_LEN]);
     let args = read_syscall_args(ctx);
+    clear_scratch_payload();
 
-    if syscall == MemorySyscall::Execve {
-        let _len = capture_execve_argv_into_scratch(args[1]);
-    } else if syscall == MemorySyscall::Openat {
-        capture_openat_path_into_scratch(args[1]);
-    } else if let Some(ptr) = SCRATCH_ARGV.get_ptr_mut(0) {
-        zero_scratch_buf(unsafe { &mut *ptr });
+    let kernel = KernelMemoryEvent {
+        timestamp_ns: now_ns,
+        pid: pid_tgid as u32,
+        tgid,
+        syscall: MemorySyscall::Mmap as u32,
+        args,
+        comm,
+    };
+
+    if let Err(err) = pending_syscalls.insert(pid_tgid, &kernel, 0) {
+        warn!(ctx, "pending syscall insert failed: {}", err);
+        return 1;
     }
+
+    let payload_ref = SCRATCH_ARGV.get(0).map(|s| &s.buf).unwrap_or(&ZERO_PAYLOAD);
+    if let Err(err) = pending_payload.insert(pid_tgid, payload_ref, 0) {
+        let _ = pending_syscalls.remove(&pid_tgid);
+        warn!(ctx, "pending payload insert failed: {}", err);
+        return 1;
+    }
+
+    0
+}
+
+#[inline(never)]
+fn store_pending_event_for_execve(ctx: &TracePointContext) -> u32 {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let tgid = (pid_tgid >> 32) as u32;
+
+    if unsafe { ALLOWLIST.get(&tgid) }.is_some() {
+        return 0;
+    }
+
+    let now_ns = unsafe { bpf_ktime_get_ns() };
+    let comm = bpf_get_current_comm().unwrap_or([0; TASK_COMM_LEN]);
+    let args = read_syscall_args(ctx);
+    let _len = capture_execve_argv_into_scratch(args[1]);
+
+    let kernel = KernelMemoryEvent {
+        timestamp_ns: now_ns,
+        pid: pid_tgid as u32,
+        tgid,
+        syscall: MemorySyscall::Execve as u32,
+        args,
+        comm,
+    };
+
+    if let Err(err) = pending_syscalls.insert(pid_tgid, &kernel, 0) {
+        warn!(ctx, "pending syscall insert failed: {}", err);
+        return 1;
+    }
+
+    let payload_ref = SCRATCH_ARGV.get(0).map(|s| &s.buf).unwrap_or(&ZERO_PAYLOAD);
+    if let Err(err) = pending_payload.insert(pid_tgid, payload_ref, 0) {
+        let _ = pending_syscalls.remove(&pid_tgid);
+        warn!(ctx, "pending payload insert failed: {}", err);
+        return 1;
+    }
+
+    0
+}
+
+#[inline(never)]
+fn store_pending_event_for_openat(ctx: &TracePointContext) -> u32 {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let tgid = (pid_tgid >> 32) as u32;
+
+    if unsafe { ALLOWLIST.get(&tgid) }.is_some() {
+        return 0;
+    }
+
+    let now_ns = unsafe { bpf_ktime_get_ns() };
+    let comm = bpf_get_current_comm().unwrap_or([0; TASK_COMM_LEN]);
+    let args = read_syscall_args(ctx);
+    capture_openat_path_into_scratch(args[1]);
+
+    let kernel = KernelMemoryEvent {
+        timestamp_ns: now_ns,
+        pid: pid_tgid as u32,
+        tgid,
+        syscall: MemorySyscall::Openat as u32,
+        args,
+        comm,
+    };
+
+    if let Err(err) = pending_syscalls.insert(pid_tgid, &kernel, 0) {
+        warn!(ctx, "pending syscall insert failed: {}", err);
+        return 1;
+    }
+
+    let payload_ref = SCRATCH_ARGV.get(0).map(|s| &s.buf).unwrap_or(&ZERO_PAYLOAD);
+    if let Err(err) = pending_payload.insert(pid_tgid, payload_ref, 0) {
+        let _ = pending_syscalls.remove(&pid_tgid);
+        warn!(ctx, "pending payload insert failed: {}", err);
+        return 1;
+    }
+
+    0
+}
+
+#[inline(never)]
+fn store_pending_event_for_mprotect(ctx: &TracePointContext) -> u32 {
+    store_pending_enter_clear(ctx, MemorySyscall::Mprotect)
+}
+
+#[inline(never)]
+fn store_pending_event_for_memfd_create(ctx: &TracePointContext) -> u32 {
+    store_pending_enter_clear(ctx, MemorySyscall::MemfdCreate)
+}
+
+#[inline(never)]
+fn store_pending_event_for_ptrace(ctx: &TracePointContext) -> u32 {
+    store_pending_enter_clear(ctx, MemorySyscall::Ptrace)
+}
+
+#[inline(never)]
+fn store_pending_enter_clear(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let tgid = (pid_tgid >> 32) as u32;
+
+    if unsafe { ALLOWLIST.get(&tgid) }.is_some() {
+        return 0;
+    }
+
+    let now_ns = unsafe { bpf_ktime_get_ns() };
+    let comm = bpf_get_current_comm().unwrap_or([0; TASK_COMM_LEN]);
+    let args = read_syscall_args(ctx);
+    clear_scratch_payload();
 
     let kernel = KernelMemoryEvent {
         timestamp_ns: now_ns,
@@ -200,7 +327,8 @@ fn store_pending_event(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
     0
 }
 
-fn emit_pending_event_on_success(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
+#[inline(never)]
+fn emit_exit_mmap(ctx: &TracePointContext) -> u32 {
     let pid_tgid = bpf_get_current_pid_tgid();
     let ret = unsafe { ctx.read_at::<i64>(16).unwrap_or(-1) };
     let pending = unsafe { pending_syscalls.get(&pid_tgid).copied() };
@@ -208,33 +336,20 @@ fn emit_pending_event_on_success(ctx: &TracePointContext, syscall: MemorySyscall
         return 0;
     };
 
-    let always_emit = matches!(
-        syscall,
-        MemorySyscall::Ptrace | MemorySyscall::Openat | MemorySyscall::Execve
-    );
-
-    if ret < 0 && !always_emit {
+    if ret < 0 {
         let _ = pending_syscalls.remove(&pid_tgid);
         let _ = pending_payload.remove(&pid_tgid);
         return 0;
     }
 
-    if syscall == MemorySyscall::Mprotect && (kernel.args[2] & PROT_EXEC) == 0 {
-        let _ = pending_syscalls.remove(&pid_tgid);
-        let _ = pending_payload.remove(&pid_tgid);
-        return 0;
-    }
+    kernel.syscall = MemorySyscall::Mmap as u32;
 
-    kernel.syscall = syscall as u32;
     let uid = bpf_get_current_uid_gid() as u32;
-
     let Some(out_ptr) = RING_SAMPLE_OUT.get_ptr_mut(0) else {
         let _ = pending_syscalls.remove(&pid_tgid);
         let _ = pending_payload.remove(&pid_tgid);
         return 0;
     };
-
-    // Member-wise write: never `payload_blob: *src` (that copies ~4 KiB onto the BPF stack).
     unsafe {
         let out = &mut *out_ptr;
         out.kernel = kernel;
@@ -248,13 +363,164 @@ fn emit_pending_event_on_success(ctx: &TracePointContext, syscall: MemorySyscall
             zero_payload_blob(&mut out.payload_blob);
         }
     }
-
     let wire_len = core::mem::size_of::<RingBufferSample>();
     let wire = unsafe { core::slice::from_raw_parts(out_ptr.cast::<u8>(), wire_len) };
     if EVENTS.output::<[u8]>(wire, 0).is_err() {
         warn!(ctx, "ring buffer output failed");
     }
+    let _ = pending_syscalls.remove(&pid_tgid);
+    let _ = pending_payload.remove(&pid_tgid);
+    0
+}
 
+#[inline(never)]
+fn emit_exit_mprotect(ctx: &TracePointContext) -> u32 {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let ret = unsafe { ctx.read_at::<i64>(16).unwrap_or(-1) };
+    let pending = unsafe { pending_syscalls.get(&pid_tgid).copied() };
+    let Some(mut kernel) = pending else {
+        return 0;
+    };
+
+    if ret < 0 {
+        let _ = pending_syscalls.remove(&pid_tgid);
+        let _ = pending_payload.remove(&pid_tgid);
+        return 0;
+    }
+
+    if (kernel.args[2] & PROT_EXEC) == 0 {
+        let _ = pending_syscalls.remove(&pid_tgid);
+        let _ = pending_payload.remove(&pid_tgid);
+        return 0;
+    }
+
+    kernel.syscall = MemorySyscall::Mprotect as u32;
+
+    let uid = bpf_get_current_uid_gid() as u32;
+    let Some(out_ptr) = RING_SAMPLE_OUT.get_ptr_mut(0) else {
+        let _ = pending_syscalls.remove(&pid_tgid);
+        let _ = pending_payload.remove(&pid_tgid);
+        return 0;
+    };
+    unsafe {
+        let out = &mut *out_ptr;
+        out.kernel = kernel;
+        out.syscall_ret = ret;
+        out.uid = uid;
+        out._reserved = 0;
+        out.layout_version = RING_SAMPLE_LAYOUT_VERSION;
+        if let Some(p) = pending_payload.get(&pid_tgid) {
+            out.payload_blob.copy_from_slice(p);
+        } else {
+            zero_payload_blob(&mut out.payload_blob);
+        }
+    }
+    let wire_len = core::mem::size_of::<RingBufferSample>();
+    let wire = unsafe { core::slice::from_raw_parts(out_ptr.cast::<u8>(), wire_len) };
+    if EVENTS.output::<[u8]>(wire, 0).is_err() {
+        warn!(ctx, "ring buffer output failed");
+    }
+    let _ = pending_syscalls.remove(&pid_tgid);
+    let _ = pending_payload.remove(&pid_tgid);
+    0
+}
+
+#[inline(never)]
+fn emit_exit_memfd_create(ctx: &TracePointContext) -> u32 {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let ret = unsafe { ctx.read_at::<i64>(16).unwrap_or(-1) };
+    let pending = unsafe { pending_syscalls.get(&pid_tgid).copied() };
+    let Some(mut kernel) = pending else {
+        return 0;
+    };
+
+    if ret < 0 {
+        let _ = pending_syscalls.remove(&pid_tgid);
+        let _ = pending_payload.remove(&pid_tgid);
+        return 0;
+    }
+
+    kernel.syscall = MemorySyscall::MemfdCreate as u32;
+
+    let uid = bpf_get_current_uid_gid() as u32;
+    let Some(out_ptr) = RING_SAMPLE_OUT.get_ptr_mut(0) else {
+        let _ = pending_syscalls.remove(&pid_tgid);
+        let _ = pending_payload.remove(&pid_tgid);
+        return 0;
+    };
+    unsafe {
+        let out = &mut *out_ptr;
+        out.kernel = kernel;
+        out.syscall_ret = ret;
+        out.uid = uid;
+        out._reserved = 0;
+        out.layout_version = RING_SAMPLE_LAYOUT_VERSION;
+        if let Some(p) = pending_payload.get(&pid_tgid) {
+            out.payload_blob.copy_from_slice(p);
+        } else {
+            zero_payload_blob(&mut out.payload_blob);
+        }
+    }
+    let wire_len = core::mem::size_of::<RingBufferSample>();
+    let wire = unsafe { core::slice::from_raw_parts(out_ptr.cast::<u8>(), wire_len) };
+    if EVENTS.output::<[u8]>(wire, 0).is_err() {
+        warn!(ctx, "ring buffer output failed");
+    }
+    let _ = pending_syscalls.remove(&pid_tgid);
+    let _ = pending_payload.remove(&pid_tgid);
+    0
+}
+
+#[inline(never)]
+fn emit_exit_ptrace(ctx: &TracePointContext) -> u32 {
+    emit_exit_always_kind(ctx, MemorySyscall::Ptrace)
+}
+
+#[inline(never)]
+fn emit_exit_execve(ctx: &TracePointContext) -> u32 {
+    emit_exit_always_kind(ctx, MemorySyscall::Execve)
+}
+
+#[inline(never)]
+fn emit_exit_openat(ctx_inner: &TracePointContext) -> u32 {
+    emit_exit_always_kind(ctx_inner, MemorySyscall::Openat)
+}
+
+#[inline(never)]
+fn emit_exit_always_kind(ctx: &TracePointContext, syscall: MemorySyscall) -> u32 {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let ret = unsafe { ctx.read_at::<i64>(16).unwrap_or(-1) };
+    let pending = unsafe { pending_syscalls.get(&pid_tgid).copied() };
+    let Some(mut kernel) = pending else {
+        return 0;
+    };
+
+    kernel.syscall = syscall as u32;
+
+    let uid = bpf_get_current_uid_gid() as u32;
+    let Some(out_ptr) = RING_SAMPLE_OUT.get_ptr_mut(0) else {
+        let _ = pending_syscalls.remove(&pid_tgid);
+        let _ = pending_payload.remove(&pid_tgid);
+        return 0;
+    };
+    unsafe {
+        let out = &mut *out_ptr;
+        out.kernel = kernel;
+        out.syscall_ret = ret;
+        out.uid = uid;
+        out._reserved = 0;
+        out.layout_version = RING_SAMPLE_LAYOUT_VERSION;
+        if let Some(p) = pending_payload.get(&pid_tgid) {
+            out.payload_blob.copy_from_slice(p);
+        } else {
+            zero_payload_blob(&mut out.payload_blob);
+        }
+    }
+    let wire_len = core::mem::size_of::<RingBufferSample>();
+    let wire = unsafe { core::slice::from_raw_parts(out_ptr.cast::<u8>(), wire_len) };
+    if EVENTS.output::<[u8]>(wire, 0).is_err() {
+        warn!(ctx, "ring buffer output failed");
+    }
     let _ = pending_syscalls.remove(&pid_tgid);
     let _ = pending_payload.remove(&pid_tgid);
     0
@@ -262,62 +528,62 @@ fn emit_pending_event_on_success(ctx: &TracePointContext, syscall: MemorySyscall
 
 #[tracepoint(category = "syscalls", name = "sys_enter_mmap")]
 pub fn sys_enter_mmap(ctx: TracePointContext) -> u32 {
-    store_pending_event(&ctx, MemorySyscall::Mmap)
+    store_pending_event_for_mmap(&ctx)
 }
 
 #[tracepoint(category = "syscalls", name = "sys_enter_mprotect")]
 pub fn sys_enter_mprotect(ctx: TracePointContext) -> u32 {
-    store_pending_event(&ctx, MemorySyscall::Mprotect)
+    store_pending_event_for_mprotect(&ctx)
 }
 
 #[tracepoint(category = "syscalls", name = "sys_enter_memfd_create")]
 pub fn sys_enter_memfd_create(ctx: TracePointContext) -> u32 {
-    store_pending_event(&ctx, MemorySyscall::MemfdCreate)
+    store_pending_event_for_memfd_create(&ctx)
 }
 
 #[tracepoint(category = "syscalls", name = "sys_enter_ptrace")]
 pub fn sys_enter_ptrace(ctx: TracePointContext) -> u32 {
-    store_pending_event(&ctx, MemorySyscall::Ptrace)
+    store_pending_event_for_ptrace(&ctx)
 }
 
 #[tracepoint(category = "syscalls", name = "sys_enter_execve")]
 pub fn sys_enter_execve(ctx: TracePointContext) -> u32 {
-    store_pending_event(&ctx, MemorySyscall::Execve)
+    store_pending_event_for_execve(&ctx)
 }
 
 #[tracepoint(category = "syscalls", name = "sys_enter_openat")]
 pub fn sys_enter_openat(ctx: TracePointContext) -> u32 {
-    store_pending_event(&ctx, MemorySyscall::Openat)
+    store_pending_event_for_openat(&ctx)
 }
 
 #[tracepoint(category = "syscalls", name = "sys_exit_mmap")]
 pub fn sys_exit_mmap(ctx: TracePointContext) -> u32 {
-    emit_pending_event_on_success(&ctx, MemorySyscall::Mmap)
+    emit_exit_mmap(&ctx)
 }
 
 #[tracepoint(category = "syscalls", name = "sys_exit_mprotect")]
 pub fn sys_exit_mprotect(ctx: TracePointContext) -> u32 {
-    emit_pending_event_on_success(&ctx, MemorySyscall::Mprotect)
+    emit_exit_mprotect(&ctx)
 }
 
 #[tracepoint(category = "syscalls", name = "sys_exit_memfd_create")]
 pub fn sys_exit_memfd_create(ctx: TracePointContext) -> u32 {
-    emit_pending_event_on_success(&ctx, MemorySyscall::MemfdCreate)
+    emit_exit_memfd_create(&ctx)
 }
 
 #[tracepoint(category = "syscalls", name = "sys_exit_ptrace")]
 pub fn sys_exit_ptrace(ctx: TracePointContext) -> u32 {
-    emit_pending_event_on_success(&ctx, MemorySyscall::Ptrace)
+    emit_exit_ptrace(&ctx)
 }
 
 #[tracepoint(category = "syscalls", name = "sys_exit_execve")]
 pub fn sys_exit_execve(ctx: TracePointContext) -> u32 {
-    emit_pending_event_on_success(&ctx, MemorySyscall::Execve)
+    emit_exit_execve(&ctx)
 }
 
 #[tracepoint(category = "syscalls", name = "sys_exit_openat")]
 pub fn sys_exit_openat(ctx: TracePointContext) -> u32 {
-    emit_pending_event_on_success(&ctx, MemorySyscall::Openat)
+    emit_exit_openat(&ctx)
 }
 
 #[cfg(not(test))]

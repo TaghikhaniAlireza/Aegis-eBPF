@@ -54,6 +54,22 @@ func LoadRules(yaml string) error {
 	return nil
 }
 
+// LoadRulesFile validates rules at path and stages file-based loading with hot-reload (must call before StartPipeline).
+func LoadRulesFile(path string) error {
+	if path == "" {
+		return errors.New("aegis: empty rules path")
+	}
+	cs, err := allocCString(path)
+	if err != nil {
+		return err
+	}
+	defer cs.free()
+	if C.aegis_load_rules_file(cs.ptr) != 0 {
+		return fmt.Errorf("aegis: LoadRulesFile failed for %q", path)
+	}
+	return nil
+}
+
 // StartPipeline starts the eBPF sensor + rule pipeline in a background thread (requires root/CAP_BPF).
 func StartPipeline() error {
 	if C.aegis_start_pipeline() != 0 {

@@ -5,8 +5,8 @@
 //	export LD_LIBRARY_PATH="/path/to/Aegis-eBPF/target/debug:$LD_LIBRARY_PATH"
 //	sudo env PATH="$PATH" LD_LIBRARY_PATH="$LD_LIBRARY_PATH" CGO_ENABLED=1 go run -tags cgo .
 //
-// By default this loads `tests/simulations/rules.yaml` relative to the **repository root**
-// (three levels up from this directory). Override with:
+// Production-style default: `/etc/aegis/rules.yaml` when that file exists (override with env).
+// Otherwise falls back to repo `tests/simulations/rules.yaml` (three levels up). Override with:
 //
 //	AEGIS_RULES_FILE=/absolute/path/to/rules.yaml
 //
@@ -38,22 +38,49 @@ const demoRuleYAML = `rules:
         - "whoami"
 `
 
-func loadRulesYAML() (string, string, error) {
+func resolveRulesPath() string {
+	if p := os.Getenv("AEGIS_RULES_FILE"); p != "" {
+		return p
+	}
+	const systemDefault = "/etc/aegis/rules.yaml"
+	if st, err := os.Stat(systemDefault); err == nil && !st.IsDir() {
+		return systemDefault
+	}
+	return filepath.Join("..", "..", "..", "tests", "simulations", "rules.yaml")
+}
+
+func loadRulesForEngine() (rulesLabel string, err error) {
 	if os.Getenv("AEGIS_RULES_DEMO") == "1" {
-		return demoRuleYAML, "(embedded demo TEST_WHOAMI)", nil
+		err = aegis.LoadRules(demoRuleYAML)
+		return "(embedded demo TEST_WHOAMI)", err
 	}
-	path := os.Getenv("AEGIS_RULES_FILE")
-	if path == "" {
-		// clients/go/examples -> ../../../tests/simulations/rules.yaml
-		path = filepath.Join("..", "..", "..", "tests", "simulations", "rules.yaml")
+	path := resolveRulesPath()
+	if abs, e := filepath.Abs(path); e == nil {
+		rulesLabel = abs
+	} else {
+		rulesLabel = path
 	}
-	abs, err := filepath.Abs(path)
+	fi, statErr := os.Stat(path)
+	if statErr != nil || fi.IsDir() {
+		yaml, _, rerr := loadRulesYAMLFromPath(path)
+		if rerr != nil {
+			return rulesLabel, rerr
+		}
+		err = aegis.LoadRules(yaml)
+		return rulesLabel, err
+	}
+	err = aegis.LoadRulesFile(path)
+	return rulesLabel, err
+}
+
+func loadRulesYAMLFromPath(path string) (yaml string, abs string, err error) {
+	abs, err = filepath.Abs(path)
 	if err != nil {
 		abs = path
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", fmt.Errorf("read rules file %q (resolved %s): %w\nSet AEGIS_RULES_FILE to your rules.yaml, or AEGIS_RULES_DEMO=1 for demo only", path, abs, err)
+		return "", abs, fmt.Errorf("read rules file %q (resolved %s): %w\nSet AEGIS_RULES_FILE or place rules at /etc/aegis/rules.yaml", path, abs, err)
 	}
 	return string(data), abs, nil
 }
@@ -79,12 +106,8 @@ func main() {
 	}
 	defer func() { _ = aegis.StopPipeline() }()
 
-	yaml, rulesLabel, err := loadRulesYAML()
+	rulesLabel, err := loadRulesForEngine()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	if err := aegis.LoadRules(yaml); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

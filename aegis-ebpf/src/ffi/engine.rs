@@ -2,6 +2,7 @@
 
 use std::{
     ffi::{CStr, c_char},
+    path::PathBuf,
     sync::Mutex,
     thread::JoinHandle,
 };
@@ -11,6 +12,8 @@ use tokio::sync::oneshot;
 use crate::{NoopEnricher, PipelineConfig, SensorConfig, pipeline::PipelineHandle, start_pipeline};
 
 static ENGINE_YAML: Mutex<Option<String>> = Mutex::new(None);
+/// When set, `aegis_start_pipeline` uses [`PipelineConfig::rules_path`] (hot-reload via [`crate::rules::watcher::RuleWatcher`]).
+static ENGINE_RULES_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 static SHUTDOWN_TX: Mutex<Option<oneshot::Sender<()>>> = Mutex::new(None);
 static ENGINE_THREAD: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
@@ -43,6 +46,9 @@ pub extern "C" fn aegis_engine_init() -> i32 {
     if let Ok(mut g) = ENGINE_YAML.lock() {
         *g = None;
     }
+    if let Ok(mut g) = ENGINE_RULES_PATH.lock() {
+        *g = None;
+    }
     super::handle::AegisErrorCode::Success as i32
 }
 
@@ -64,22 +70,67 @@ pub unsafe extern "C" fn aegis_load_rules(yaml: *const c_char) -> i32 {
         tracing::error!("aegis_load_rules: invalid yaml: {e}");
         return super::handle::AegisErrorCode::InitFailed as i32;
     }
+    if let Ok(mut g) = ENGINE_RULES_PATH.lock() {
+        *g = None;
+    }
     if let Ok(mut g) = ENGINE_YAML.lock() {
         *g = Some(s);
     }
     super::handle::AegisErrorCode::Success as i32
 }
 
+/// Load rules from a filesystem path (YAML file). Enables hot-reload when the file changes.
+/// Mutually exclusive with `aegis_load_rules` for the next `aegis_start_pipeline` call.
+///
+/// # Safety
+/// `path_utf8` must be a valid pointer to a NUL-terminated UTF-8 path string for the lifetime of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aegis_load_rules_file(path_utf8: *const c_char) -> i32 {
+    if path_utf8.is_null() {
+        return super::handle::AegisErrorCode::NullPointer as i32;
+    }
+    let p = match unsafe { CStr::from_ptr(path_utf8) }.to_str() {
+        Ok(s) => PathBuf::from(s),
+        Err(_) => return super::handle::AegisErrorCode::InitFailed as i32,
+    };
+    if let Err(e) = crate::rules::loader::RuleSet::from_file(&p) {
+        tracing::error!(
+            "aegis_load_rules_file: invalid rules file {}: {e}",
+            p.display()
+        );
+        return super::handle::AegisErrorCode::InitFailed as i32;
+    }
+    if let Ok(mut g) = ENGINE_YAML.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = ENGINE_RULES_PATH.lock() {
+        *g = Some(p);
+    }
+    super::handle::AegisErrorCode::Success as i32
+}
+
 /// Start the sensor + pipeline on a dedicated thread with its own Tokio runtime.
-/// Requires prior `aegis_load_rules`. Uses `register_event_callback` when set (`start_pipeline` wires it).
+/// Requires prior `aegis_load_rules` **or** `aegis_load_rules_file`. Uses `register_event_callback` when set (`start_pipeline` wires it).
 #[unsafe(no_mangle)]
 pub extern "C" fn aegis_start_pipeline() -> i32 {
     if ENGINE_THREAD.lock().ok().is_some_and(|g| g.is_some()) {
         return super::handle::AegisErrorCode::InitFailed as i32;
     }
-    let yaml = match ENGINE_YAML.lock().ok().and_then(|g| g.clone()) {
-        Some(y) => y,
-        None => return super::handle::AegisErrorCode::InitFailed as i32,
+    let rules_path = ENGINE_RULES_PATH.lock().ok().and_then(|g| g.clone());
+    let inline_yaml = ENGINE_YAML.lock().ok().and_then(|g| g.clone());
+
+    let pipeline_rules = match (&rules_path, &inline_yaml) {
+        (Some(path), None) => PipelineConfig {
+            rules_path: Some(path.clone()),
+            rules_inline_yaml: None,
+            ..PipelineConfig::default()
+        },
+        (None, Some(yaml)) => PipelineConfig {
+            rules_path: None,
+            rules_inline_yaml: Some(yaml.clone()),
+            ..PipelineConfig::default()
+        },
+        _ => return super::handle::AegisErrorCode::InitFailed as i32,
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -102,10 +153,7 @@ pub extern "C" fn aegis_start_pipeline() -> i32 {
         rt.block_on(async move {
             let handle: PipelineHandle = match start_pipeline(
                 SensorConfig::default(),
-                PipelineConfig {
-                    rules_inline_yaml: Some(yaml),
-                    ..PipelineConfig::default()
-                },
+                pipeline_rules,
                 std::sync::Arc::new(NoopEnricher),
             )
             .await

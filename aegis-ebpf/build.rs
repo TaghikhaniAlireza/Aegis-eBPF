@@ -189,6 +189,7 @@ fn ensure_ffi_function_declarations(header_path: &Path) -> anyhow::Result<()> {
         && content.contains("unregister_event_callback(")
         && content.contains("aegis_engine_init(")
         && content.contains("aegis_load_rules(")
+        && content.contains("aegis_load_rules_file(")
         && content.contains("aegis_start_pipeline(")
     {
         return Ok(());
@@ -230,6 +231,7 @@ void unregister_event_callback(void);
 
 int32_t aegis_engine_init(void);
 int32_t aegis_load_rules(const char *yaml_utf8);
+int32_t aegis_load_rules_file(const char *path_utf8);
 int32_t aegis_start_pipeline(void);
 int32_t aegis_stop_pipeline(void);
 
