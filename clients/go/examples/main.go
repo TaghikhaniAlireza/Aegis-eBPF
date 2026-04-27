@@ -92,8 +92,19 @@ func main() {
 	}
 
 	if err := aegis.RegisterEventCallback(func(ev aegis.StandardizedEvent) {
-		fmt.Printf("ALERT rules=%v syscall=%s pid=%d uid=%d user=%q comm=%q cmdline=%q args=%v ts=%d\n",
-			ev.MatchedRules, ev.SyscallName, ev.PID, ev.UID, ev.Username, ev.ProcessName, ev.Cmdline, ev.Arguments, ev.Timestamp)
+		// Only rows with matched_rules are security alerts unless YAML suppressions cleared the alert path.
+		// Observations with matched_rules=[] are normal syscall telemetry (not an "ALERT").
+		label := "EVENT"
+		switch {
+		case len(ev.MatchedRules) > 0 && len(ev.SuppressedBy) == 0:
+			label = "ALERT"
+		case len(ev.MatchedRules) > 0 && len(ev.SuppressedBy) > 0:
+			label = "SUPPRESSED_ALERT"
+		case len(ev.SuppressedBy) > 0:
+			label = "SUPPRESSED"
+		}
+		fmt.Printf("%s matched=%v suppressed_by=%v syscall=%s pid=%d uid=%d user=%q comm=%q cmdline=%q args=%v ts=%d\n",
+			label, ev.MatchedRules, ev.SuppressedBy, ev.SyscallName, ev.PID, ev.UID, ev.Username, ev.ProcessName, ev.Cmdline, ev.Arguments, ev.Timestamp)
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -119,6 +130,7 @@ func main() {
 	}
 
 	fmt.Println("Aegis monitor running. Rules:", rulesLabel)
+	fmt.Println("Lines: ALERT = rule match, EVENT = observation (no rule), SUPPRESSED* = YAML suppressions (see tests/simulations/rules.yaml).")
 	fmt.Println("Try: whoami  |  python3 tests/simulations/attack_simulator.py  (from repo root)")
 	fmt.Println("Ctrl+C to exit.")
 

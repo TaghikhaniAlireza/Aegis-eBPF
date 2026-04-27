@@ -57,3 +57,76 @@ rules:
     conditions:
       syscall: "ptrace"
       ptrace_request: 16
+
+# ------------------------------------------------------------------------------
+# Suppressions: trusted / high-volume benign patterns (adjust for your fleet).
+# When both a rule and a suppression match, alerts are skipped but matched_rules
+# stays populated in JSON; Go example prints SUPPRESSED_ALERT.
+# ------------------------------------------------------------------------------
+suppressions:
+  - id: "SUPP_SYSTEMD_OOMD_OPENAT"
+    name: "systemd-oomd memory accounting"
+    description: "Reads /proc/meminfo and cgroup memory.pressure-style paths for OOM decisions."
+    conditions:
+      syscall: "openat"
+      process_name_pattern: "^systemd-oomd$"
+      pathname_pattern: ".*/(proc/meminfo|sys/fs/cgroup/.*)$"
+
+  - id: "SUPP_GSD_HOUSEKEEPING_MOUNTS"
+    name: "GNOME housekeeping mount probes"
+    description: "gnome-settings-daemon housekeeping monitors mounts."
+    conditions:
+      syscall: "openat"
+      process_name_pattern: "^gsd-housekeep"
+      pathname_pattern: ".*/(proc/self/mountinfo|run/mount/utab)$"
+
+  - id: "SUPP_GNOME_SHELL_PROC_STAT"
+    name: "gnome-shell /proc reads"
+    description: "Compositor periodically reads process stats."
+    conditions:
+      syscall: "openat"
+      process_name_pattern: "^gnome-shell$"
+      pathname_pattern: ".*/proc/(self/stat|[0-9]+/stat)$"
+
+  - id: "SUPP_PIPELINE_PASSWD_ENRICHMENT"
+    name: "Aegis pipeline passwd enrichment"
+    description: "Tokio worker threads resolve uid→username via /etc/passwd."
+    conditions:
+      syscall: "openat"
+      process_name_pattern: "^tokio-rt-worker$"
+      pathname_pattern: ".*/etc/passwd$"
+
+  - id: "SUPP_GO_EXAMPLE_TRACEFS_SYSCALL_IDS"
+    name: "Go example tracefs syscall metadata"
+    description: "examples binary probes tracepoint ids under /sys/kernel/tracing during attach."
+    conditions:
+      syscall: "openat"
+      process_name_pattern: "^examples$"
+      pathname_pattern: ".*/sys/kernel/tracing/events/syscalls/.*"
+
+  - id: "SUPP_GO_EXAMPLE_MAP_ANON_READ"
+    name: "Go runtime anonymous mmap"
+    description: "Typical PROT_READ anonymous mapping from the Go example / runtime."
+    conditions:
+      syscall: "mmap"
+      process_name_pattern: "^examples$"
+      flags_contains: ["PROT_READ"]
+      flags_excludes: ["PROT_EXEC", "PROT_WRITE"]
+
+  - id: "SUPP_GNOME_SHELL_MAP_ANON_READ"
+    name: "Mutter/clutter anonymous read mappings"
+    description: "JIT-heavy desktop shell uses anonymous RW→RX transitions; suppress plain PROT_READ mmap noise."
+    conditions:
+      syscall: "mmap"
+      process_name_pattern: "^gnome-shell$"
+      flags_contains: ["PROT_READ"]
+      flags_excludes: ["PROT_EXEC", "PROT_WRITE"]
+
+  - id: "SUPP_TOKIO_WORKER_MAP_ANON"
+    name: "Tokio worker anonymous mappings"
+    description: "Standard allocator anonymous regions (non-executable)."
+    conditions:
+      syscall: "mmap"
+      process_name_pattern: "^tokio-rt-worker$"
+      flags_contains: ["PROT_READ", "PROT_WRITE"]
+      flags_excludes: ["PROT_EXEC"]
