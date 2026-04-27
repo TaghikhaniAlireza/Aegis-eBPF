@@ -1,6 +1,9 @@
 # Validation rules for Phase 2.2 attack simulations (`tests/simulations/attack_simulator.py`).
 # Load this file into the Aegis pipeline while the sensor runs as root.
 #
+# Layout tip: one file is fine for demos. For production, prefer a directory passed as rules_path —
+# every `*.yaml` / `*.yml` is merged in sorted order (e.g. `10-rules.yaml`, `90-suppressions.yaml`).
+#
 # Note: `attack_simulator.py` is often run with `sudo`, so syscalls from that process show uid=0.
 # Rules that should match the simulator therefore use uid: 0 where needed, or omit `uid` to match any user.
 
@@ -129,4 +132,67 @@ suppressions:
       syscall: "mmap"
       process_name_pattern: "^tokio-rt-worker$"
       flags_contains: ["PROT_READ", "PROT_WRITE"]
+      flags_excludes: ["PROT_EXEC"]
+
+  # --- Python interpreter & stdlib loads (does not match `/tmp/malicious_payload` opens) ---
+  - id: "SUPP_PYTHON_OPENAT_STDLIB"
+    name: "Python stdlib / bytecode paths"
+    description: "Interpreter reads __pycache__, site-packages, lib-dynload, ld.so.cache, shared libs."
+    conditions:
+      syscall: "openat"
+      process_name_pattern: "^python3?$"
+      pathname_pattern: ".*/(usr/lib/python[0-9.]+/.*|lib/x86_64-linux-gnu/.*|etc/ld\\.so\\.cache)$"
+
+  - id: "SUPP_PYTHON_PROC_SELF_FD"
+    name: "Python /proc/self/fd listing"
+    description: "Occasional introspection during subprocess or FD handling."
+    conditions:
+      syscall: "openat"
+      process_name_pattern: "^python3?$"
+      pathname_pattern: ".*/proc/self/fd$"
+
+  # --- gnome-shell: RX mprotect churn (flags 0x5 = READ|EXEC), not SIM_A_RWX which requires WRITE ---
+  - id: "SUPP_GNOME_SHELL_MPROTECT_RX"
+    name: "Shell JIT RX transitions without write"
+    description: "Suppress READ|EXEC mprotect noise; keep rules that require PROT_WRITE on mprotect."
+    conditions:
+      syscall: "mprotect"
+      process_name_pattern: "^gnome-shell$"
+      flags_contains: ["PROT_READ", "PROT_EXEC"]
+      flags_excludes: ["PROT_WRITE"]
+
+  # --- irqbalance / VMware guest tools ---
+  - id: "SUPP_IRQBALANCE_PROC"
+    name: "irqbalance /proc metrics"
+    description: "Daemon rebalances IRQ affinity using /proc/interrupts, stat, irq affinity files."
+    conditions:
+      syscall: "openat"
+      process_name_pattern: "^irqbalance$"
+      pathname_pattern: ".*/proc/(interrupts|stat|irq/[0-9]+/smp_affinity)$"
+
+  - id: "SUPP_VMTOOLSD_PROC"
+    name: "open-vm-tools host metrics"
+    description: "Guest tools poll /proc for memory, disk, uptime."
+    conditions:
+      syscall: "openat"
+      process_name_pattern: "^vmtoolsd$"
+      pathname_pattern: ".*/proc/(meminfo|vmstat|stat|zoneinfo|uptime|diskstats)$"
+
+  # --- Interactive tiny utilities (locale/terminfo); narrow comm to avoid masking malicious `cat` ---
+  - id: "SUPP_CLEAR_LOCALE_TERMI"
+    name: "clear(1) ncurses locale loads"
+    description: "Terminal clear loads terminfo + libc gettext catalogs."
+    conditions:
+      syscall: "openat"
+      process_name_pattern: "^clear$"
+      pathname_pattern: ".*/(lib/x86_64-linux-gnu/(libtinfo|libc)\\.so\\.[0-9]+|etc/ld\\.so\\.cache|lib/terminfo/.*|usr/share/locale(-langpack)?/.*\\.mo)$"
+
+  # --- Go example runtime huge anonymous maps (MAP_PRIVATE|MAP_ANONYMOUS often 0x22 in flags field) ---
+  - id: "SUPP_EXAMPLES_MAP_ANON_HUGE"
+    name: "examples runtime arena maps"
+    description: "Large anonymous RW mappings from the embedded Go monitor (non-exec)."
+    conditions:
+      syscall: "mmap"
+      process_name_pattern: "^examples$"
+      flags_contains: ["MAP_ANONYMOUS"]
       flags_excludes: ["PROT_EXEC"]

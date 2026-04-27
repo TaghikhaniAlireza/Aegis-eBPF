@@ -2,6 +2,12 @@
 
 This document describes the YAML rule format consumed by the userspace rule engine (`aegis-ebpf`). Rules filter enriched memory/syscall events produced by the eBPF sensor and pipeline.
 
+## File organization: one file vs directory
+
+- **Single file** (e.g. `rules.yaml` with both `rules:` and `suppressions:`) is simplest for development and small deployments.
+- **Directory of YAML files** is better for production: set `rules_path` to a **folder**; the engine loads and merges every `*.yaml` / `*.yml` in **sorted** order. Use a numeric prefix (e.g. `10-detection.yaml`, `90-suppress.yaml`) so load order and code review stay obvious.
+- The repository’s `tests/simulations/rules.yaml` keeps both in one file for the attack-simulator workflow; you can split the same content into two files in a directory when you outgrow a single file.
+
 ## Loading rules
 
 Rules are validated at load time (syntax, syscall names, regex fields, cross-field constraints).
