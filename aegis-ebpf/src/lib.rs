@@ -44,7 +44,8 @@ impl Default for SensorConfig {
     fn default() -> Self {
         Self {
             allowlist_pids: vec![],
-            channel_capacity: 1024,
+            // Large ring-buffer records + syscall bursts: avoid starving the enrichment task.
+            channel_capacity: 8192,
         }
     }
 }

@@ -19,6 +19,8 @@ import "C"
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"sync"
 	"unsafe"
 )
@@ -131,6 +133,8 @@ func aegis_go_json_event_callback(cjson *C.char) { // cgo passes char* (mutable 
 
 	var ev StandardizedEvent
 	if err := json.Unmarshal([]byte(s), &ev); err != nil {
+		// Silent unmarshal failures made “no alerts” look like a rule-engine bug; surface decode issues.
+		fmt.Fprintf(os.Stderr, "aegis: StandardizedEvent JSON decode error: %v (len=%d)\n", err, len(s))
 		return
 	}
 	cb(ev)

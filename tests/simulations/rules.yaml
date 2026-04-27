@@ -5,6 +5,16 @@
 # Rules that should match the simulator therefore use uid: 0 where needed, or omit `uid` to match any user.
 
 rules:
+  # Interactive testing: plain `whoami` in another terminal (execve argv contains this substring).
+  - id: "SIM_INTERACTIVE_WHOAMI"
+    name: "Interactive whoami (manual test)"
+    severity: "medium"
+    description: "Matches execve cmdline containing whoami (see also attack_simulator / SIM_*)."
+    conditions:
+      syscall: "execve"
+      argv_contains:
+        - "whoami"
+
   - id: "SIM_A_RWX"
     name: "Anonymous RWX via mprotect"
     severity: "high"

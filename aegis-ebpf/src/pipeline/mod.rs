@@ -435,8 +435,14 @@ async fn run_partition_worker(
 
         if let Some(cb) = &on_standardized_event {
             let std_ev = build_standardized_event_from_rules(&event, &matches);
-            if let Ok(json) = serde_json::to_string(&std_ev) {
-                cb(json).await;
+            match serde_json::to_string(&std_ev) {
+                Ok(json) => cb(json).await,
+                Err(e) => tracing_warn!(
+                    syscall = ?event.inner.event_type,
+                    tgid = event.inner.tgid,
+                    error = %e,
+                    "StandardizedEvent JSON serialization failed (event skipped for FFI)"
+                ),
             }
         }
 
