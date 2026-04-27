@@ -83,7 +83,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/aegis-ebpf/sdk/pkg/aegis"
+	"github.com/TaghikhaniAlireza/aegis-ebpf/sdk/pkg/aegis"
 )
 
 func main() {
