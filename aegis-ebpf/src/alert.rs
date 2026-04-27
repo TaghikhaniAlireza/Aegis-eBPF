@@ -170,7 +170,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use crate::{
-        NoopEnricher, PipelineConfig,
+        EnrichedEvent, NoopEnricher, PipelineConfig,
         alert::{Alert, AlertCallback, StandardizedEventCallback},
         pipeline::start_pipeline_from_receiver_for_tests,
         rules::Severity,
@@ -427,5 +427,22 @@ suppressions:
             v["suppressed_by"].as_array().unwrap()[0].as_str().unwrap(),
             "SUPP_UNIT_TEST_COMM"
         );
+    }
+
+    #[test]
+    fn standardized_event_json_includes_matched_rules_and_suppressed_by() {
+        let ev = EnrichedEvent {
+            inner: fake_event(EventType::Mmap, 0),
+            metadata: None,
+            cmdline_context: None,
+            username: None,
+        };
+        let std = super::build_standardized_event(&ev, &["R1".into(), "R2".into()], &["S1".into()]);
+        let json = serde_json::to_string(&std).expect("serialize");
+        assert!(json.contains("\"matched_rules\""));
+        assert!(json.contains("\"suppressed_by\""));
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["matched_rules"], serde_json::json!(["R1", "R2"]));
+        assert_eq!(v["suppressed_by"], serde_json::json!(["S1"]));
     }
 }

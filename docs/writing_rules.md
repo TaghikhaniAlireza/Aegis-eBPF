@@ -5,7 +5,7 @@ This document describes the YAML rule format consumed by the userspace rule engi
 ## File organization: one file vs directory
 
 - **Single file** (e.g. `rules.yaml` with both `rules:` and `suppressions:`) is simplest for development and small deployments.
-- **Directory of YAML files** is better for production: set `rules_path` to a **folder**; the engine loads and merges every `*.yaml` / `*.yml` in **sorted** order. Use a numeric prefix (e.g. `10-detection.yaml`, `90-suppress.yaml`) so load order and code review stay obvious.
+- **Directory of YAML files** is better for production: set `rules_path` to a **folder**; the engine loads and merges every **regular file** `*.yaml` / `*.yml` in the **top-level** of that directory (not recursive), in **UTF-8 path sort** order. Use a numeric prefix (e.g. `10-detection.yaml`, `90-suppress.yaml`) so load order and code review stay obvious. `rules` and `suppressions` from each file are concatenated in that file order.
 - The repository’s `tests/simulations/rules.yaml` keeps both in one file for the attack-simulator workflow; you can split the same content into two files in a directory when you outgrow a single file.
 
 ## Loading rules

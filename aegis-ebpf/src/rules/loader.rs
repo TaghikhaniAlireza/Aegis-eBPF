@@ -32,16 +32,24 @@ impl RuleSet {
         Self::from_yaml_str(&content)
     }
 
+    /// Load every `*.yaml` / `*.yml` **directly** under `dir` (non-recursive), sort paths with
+    /// [`Path::cmp`] (Unicode, portable), then merge: each file’s `rules` are appended in that
+    /// order, then each file’s `suppressions` likewise. Same id in two files yields two entries
+    /// unless you dedupe in policy.
     pub fn from_dir(dir: impl AsRef<Path>) -> Result<Self, RuleError> {
         let mut rules = Vec::new();
         let mut suppressions = Vec::new();
         let mut entries: Vec<PathBuf> = fs::read_dir(dir.as_ref())?
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .filter(|path| {
-                path.extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
-                    .unwrap_or(false)
+                path.is_file()
+                    && path
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| {
+                            ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml")
+                        })
+                        .unwrap_or(false)
             })
             .collect();
         entries.sort();
@@ -105,5 +113,95 @@ impl RuleSet {
             rules: Vec::new(),
             suppressions: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::RuleSet;
+
+    #[test]
+    fn from_dir_merges_yaml_in_sorted_path_order() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("02-b.yaml"),
+            r#"
+rules:
+  - id: "RULE_B"
+    name: "b"
+    severity: "low"
+    description: "d"
+    conditions:
+      syscall: "mmap"
+"#,
+        )
+        .expect("write");
+        fs::write(
+            dir.path().join("01-a.yaml"),
+            r#"
+rules:
+  - id: "RULE_A"
+    name: "a"
+    severity: "low"
+    description: "d"
+    conditions:
+      syscall: "mmap"
+"#,
+        )
+        .expect("write");
+        // Non-yaml ignored
+        fs::write(dir.path().join("readme.txt"), "x").expect("write");
+
+        let set = RuleSet::from_dir(dir.path()).expect("from_dir");
+        assert_eq!(
+            set.rules.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["RULE_A", "RULE_B"]
+        );
+    }
+
+    #[test]
+    fn from_dir_merges_suppressions_across_files() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("rules.yaml"),
+            r#"
+rules:
+  - id: "R1"
+    name: "n"
+    severity: "low"
+    description: "d"
+    conditions:
+      syscall: "mmap"
+
+suppressions:
+  - id: "S_A"
+    name: "sa"
+    description: "d"
+    conditions:
+      syscall: "mmap"
+"#,
+        )
+        .expect("write");
+        fs::write(
+            dir.path().join("zz_more.yml"),
+            r#"
+suppressions:
+  - id: "S_B"
+    name: "sb"
+    description: "d"
+    conditions:
+      syscall: "mmap"
+"#,
+        )
+        .expect("write");
+
+        let set = RuleSet::from_dir(dir.path()).expect("from_dir");
+        assert_eq!(set.rules.len(), 1);
+        let supp_ids: Vec<&str> = set.suppressions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(supp_ids, vec!["S_A", "S_B"]);
     }
 }
