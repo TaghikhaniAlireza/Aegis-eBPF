@@ -1,4 +1,6 @@
 // Package aegis is a thin Go client over the Aegis-eBPF Rust cdylib, including JSON event callbacks.
+//
+// Log level FFI: see aegis_set_log_level in aegis-ebpf/include/aegis.h — wrapped by [SetLogLevel] / [InitEngineWithConfig].
 package aegis
 
 /*
@@ -32,8 +34,22 @@ var (
 
 // InitEngine resets embedded engine state in Rust (call before LoadRules / StartPipeline).
 func InitEngine() error {
+	return InitEngineWithConfig(EngineConfig{})
+}
+
+// EngineConfig optional knobs for [InitEngineWithConfig].
+type EngineConfig struct {
+	// LogLevel, if non-nil, calls [SetLogLevel] after init (overrides AEGIS_LOG_LEVEL applied inside Rust init).
+	LogLevel *LogLevel
+}
+
+// InitEngineWithConfig calls aegis_engine_init then applies cfg (e.g. log level override).
+func InitEngineWithConfig(cfg EngineConfig) error {
 	if C.aegis_engine_init() != 0 {
 		return errors.New("aegis: InitEngine failed")
+	}
+	if cfg.LogLevel != nil {
+		return SetLogLevel(*cfg.LogLevel)
 	}
 	return nil
 }
@@ -86,19 +102,20 @@ func StopPipeline() error {
 	return nil
 }
 
-// LogLevel mirrors aegis_set_log_level (0=TRACE … 4=ALERT).
+// LogLevel is the argument type for [SetLogLevel], matching C int32_t level (0…4) for aegis_set_log_level.
 type LogLevel int32
 
 const (
-	LogLevelTrace      LogLevel = 0
+	LogLevelTrace      LogLevel = 0 // AEGIS_LOG_LEVEL=TRACE
 	LogLevelInfo       LogLevel = 1
 	LogLevelSuppressed LogLevel = 2
 	LogLevelEvent      LogLevel = 3
 	LogLevelAlert      LogLevel = 4
 )
 
-// SetLogLevel sets the minimum Aegis core log severity for [Aegis][LEVEL] lines on stderr.
-// Call after InitEngine or anytime; invalid levels return an error.
+// SetLogLevel wraps aegis_set_log_level: minimum severity for Rust [Aegis][LEVEL] stderr lines.
+// Valid range is [LogLevelTrace, LogLevelAlert]; other values return an error (no C heap allocation).
+// Safe to call before or after [InitEngine]; thread-safe in Rust.
 func SetLogLevel(level LogLevel) error {
 	rc := C.aegis_set_log_level(C.int32_t(level))
 	if rc != 0 {

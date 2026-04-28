@@ -70,7 +70,7 @@ Summary:
 ## FFI / Go
 
 - C: `int32_t aegis_set_log_level(int32_t level);` — `0` = TRACE … `4` = ALERT; invalid → error code.
-- Go: `aegis.SetLogLevel(aegis.LogLevelAlert)` etc.
+- Go (`clients/go/aegis`): **`SetLogLevel(aegis.LogLevelAlert)`** and constants **`LogLevelTrace` … `LogLevelAlert`**. **`InitEngineWithConfig(EngineConfig{LogLevel: &lvl})`** calls `aegis_engine_init` then applies **`SetLogLevel`** when `LogLevel` is non-nil (useful to override `AEGIS_LOG_LEVEL` after Rust’s first parse).
 
 ## Quick checks
 
