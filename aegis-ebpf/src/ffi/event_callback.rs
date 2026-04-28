@@ -76,9 +76,11 @@ mod tests {
         },
     };
 
-    use serial_test::serial;
-
     use super::*;
+
+    /// Serialize tests that touch [`GLOBAL_JSON_CALLBACK`] / shared counters. Avoid `serial_test`
+    /// here: its internal `scc` map triggers Miri "memory leaked" without `-Zmiri-ignore-leaks`.
+    static EVENT_CALLBACK_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     static SEEN: AtomicUsize = AtomicUsize::new(0);
     static LAST: Mutex<Option<String>> = Mutex::new(None);
@@ -97,8 +99,8 @@ mod tests {
     }
 
     #[test]
-    #[serial(event_callback_global)]
     fn register_invokes_json() {
+        let _guard = EVENT_CALLBACK_TEST_MUTEX.lock().unwrap();
         SEEN.store(0, Ordering::SeqCst);
         *LAST.lock().unwrap() = None;
 
@@ -118,8 +120,8 @@ mod tests {
     }
 
     #[test]
-    #[serial(event_callback_global)]
     fn stress_json_callback_roundtrip() {
+        let _guard = EVENT_CALLBACK_TEST_MUTEX.lock().unwrap();
         SEEN.store(0, Ordering::SeqCst);
         unsafe {
             register_event_callback(test_cb);
