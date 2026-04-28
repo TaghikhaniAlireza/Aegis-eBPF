@@ -1,0 +1,9 @@
+# Build context: keep the image small and fast
+**/target/
+.git
+.github
+build/
+*.deb
+scripts/vm/
+**/node_modules/
+**/.vagrant/
