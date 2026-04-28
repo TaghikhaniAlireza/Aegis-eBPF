@@ -26,7 +26,7 @@ RUN rustup toolchain install nightly --profile minimal --component rust-src \
 
 RUN cargo install bpf-linker --version 0.10.3 --locked
 
-COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
+COPY Cargo.toml Cargo.lock rustfmt.toml ./
 COPY aegis-ebpf-common aegis-ebpf-common
 COPY aegis-ebpf-ebpf aegis-ebpf-ebpf
 COPY aegis-ebpf aegis-ebpf

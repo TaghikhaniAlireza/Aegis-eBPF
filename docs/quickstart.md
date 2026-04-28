@@ -10,14 +10,7 @@ Run the pre-built **aegis-agent** from GitHub Container Registry (GHCR) without 
 
 ## One command
 
-Replace `YOUR_GH_USER` with your GitHub username or organization (**lowercase** for GHCR paths).
-
-```bash
-docker run --rm -it --privileged \
-  ghcr.io/your-org/aegis-ebpf:latest
-```
-
-Example for this repository’s default registry layout (after CI has published the image):
+GHCR image path (**owner must be lowercase**):
 
 ```bash
 docker run --rm -it --privileged \
@@ -43,7 +36,7 @@ Mount your own config instead of the baked-in defaults:
 docker run --rm -it --privileged \
   -v "$(pwd)/my-config.yaml:/etc/aegis/config.yaml:ro" \
   -v "$(pwd)/my-rules.yaml:/etc/aegis/rules.yaml:ro" \
-  ghcr.io/your-org/aegis-ebpf:latest
+  ghcr.io/taghikhanialireza/aegis-ebpf:latest
 ```
 
 Example `my-config.yaml`:
@@ -63,7 +56,7 @@ Security events are written **only** to `logging.path` inside the container file
 mkdir -p ./aegis-logs
 docker run --rm -it --privileged \
   -v "$(pwd)/aegis-logs:/var/log/aegis" \
-  ghcr.io/your-org/aegis-ebpf:latest
+  ghcr.io/taghikhanialireza/aegis-ebpf:latest
 ```
 
 Then inspect events:

@@ -44,7 +44,7 @@ eBPF does not run on macOS; you can cross-compile the Linux binary and copy arti
 
 ## Docker (pre-built image)
 
-See **[docs/quickstart.md](./docs/quickstart.md)** for `docker run --privileged … ghcr.io/<owner>/aegis-ebpf:latest` (GHCR publishes on pushes to `main` and on `v*` tags).
+See **[docs/quickstart.md](./docs/quickstart.md)** for `docker run --privileged … ghcr.io/taghikhanialireza/aegis-ebpf:latest` (GHCR publishes on pushes to `main` and on `v*` tags).
 
 ## Installation
 
