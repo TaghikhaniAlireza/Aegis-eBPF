@@ -278,6 +278,13 @@ jobs:
           cargo build -p aegis-ebpf --features prometheus --verbose
           cargo test -p aegis-ebpf --features prometheus --test observability_integration --verbose
 
+      # Median ceilings for hot paths (see scripts/ci/criterion_gate.py). ~5% slack vs typical CI.
+      - name: Criterion regression gate (arena + rule engine)
+        run: |
+          set -euxo pipefail
+          cargo bench -p aegis-ebpf --bench rule_engine_bench --bench arena_benchmark -- --noplot 2>&1 \
+            | python3 scripts/ci/criterion_gate.py
+
       # `ebpf_overhead_bench` compares multiplicative slowdown vs baseline; debug builds + noisy
       # GitHub runners (esp. ubuntu-22.04) often land ~3.2–3.5× (see issue: margin over 3.0× cap).
       # Keep stricter defaults locally; relax only for CI via env (see tests/ebpf_overhead_bench.rs).

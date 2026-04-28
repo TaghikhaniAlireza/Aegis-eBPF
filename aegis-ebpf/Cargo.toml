@@ -66,6 +66,10 @@ serial_test = "3"
 name = "arena_benchmark"
 harness = false
 
+[[bench]]
+name = "rule_engine_bench"
+harness = false
+
 [build-dependencies]
 anyhow = { workspace = true }
 aya-build = { workspace = true }

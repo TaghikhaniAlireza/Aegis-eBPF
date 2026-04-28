@@ -113,4 +113,20 @@ mod tests {
         invoke_registered_json_callback("ignored");
         assert_eq!(SEEN.load(Ordering::SeqCst), 1);
     }
+
+    #[test]
+    fn stress_json_callback_roundtrip() {
+        SEEN.store(0, Ordering::SeqCst);
+        unsafe {
+            register_event_callback(test_cb);
+        }
+        let payload = r#"{"matched_rules":["STRESS"],"timestamp":1}"#;
+        for _ in 0..50_000 {
+            invoke_registered_json_callback(payload);
+        }
+        assert_eq!(SEEN.load(Ordering::SeqCst), 50_000);
+        unregister_event_callback();
+        invoke_registered_json_callback("ignored");
+        assert_eq!(SEEN.load(Ordering::SeqCst), 50_000);
+    }
 }

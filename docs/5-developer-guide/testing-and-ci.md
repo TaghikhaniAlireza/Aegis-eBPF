@@ -32,6 +32,24 @@ This page summarizes how **GitHub Actions** validates the repository and how **r
 5. Stage **`libaegis_ebpf.so`**, **`libaegis_ebpf.a`**, **`aegis.h`** into **`aegis-ebpf-linux-amd64.tar.gz`**.
 6. **`softprops/action-gh-release`** uploads the **`.deb`** and **`.tar.gz`** to the GitHub Release for that tag.
 
+## Workflow: `Core compat` (`.github/workflows/core-compat.yml`)
+
+**Triggers:** same as CI (`main` / PRs).
+
+**Purpose:** **Mandatory** eBPF smoke on **ubuntu-22.04** and **ubuntu-24.04** runners (different kernel lines): release build, then **`verifier_load_test`** and **`tracepoint_attach_test`** with **`sudo`** and **`--ignored`**. This catches CO-RE / verifier regressions on real GitHub-hosted kernels without relying on the optional Vagrant matrix alone.
+
+> GitHub no longer provides **`ubuntu-20.04`** reliably; the matrix uses **22.04+** (5.15+ style kernels) for cross-generation coverage.
+
+## Workflow: `FFI assurance` (`.github/workflows/ffi-assurance.yml`)
+
+**Triggers:** `main` / PRs.
+
+Runs **`./run_memory_checks.sh`**: **Miri** on `ffi` + `arena` modules and **AddressSanitizer** on `cargo test -p aegis-ebpf --lib` for the `x86_64-unknown-linux-gnu` target.
+
+## Criterion regression gate (in `CI` job)
+
+After building with the **prometheus** feature, **`scripts/ci/criterion_gate.py`** parses **`cargo bench`** output for **`arena_benchmark`** and **`rule_engine_bench`** and fails if median times exceed configurable ceilings (defaults include ~5% slack over typical CI medians for 256-rule evaluation, arena `try_push`, and state tracker updates).
+
 ## Workflow: `Docker` (`.github/workflows/docker-publish.yml`)
 
 **Triggers:** `push` to **`main`** and tags **`v*`**.

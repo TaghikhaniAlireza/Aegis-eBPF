@@ -1,0 +1,63 @@
+# =============================================================================
+# FFI assurance: Miri + AddressSanitizer (mandatory on main / PRs)
+# =============================================================================
+# Runs targeted Miri tests on the FFI/arena surface and ASAN on the full
+# aegis-ebpf library test suite. Uses the same script as local developers.
+# =============================================================================
+
+name: FFI assurance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  miri-asan:
+    name: Miri + ASAN
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install nightly Rust (Miri + rust-src for build.rs)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, miri, llvm-tools-preview
+
+      - name: Install stable Rust (for mixed toolchain expectations)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install eBPF build dependencies (Miri/ASAN still compile build.rs once)
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            llvm \
+            libelf-dev \
+            zlib1g-dev \
+            linux-headers-generic \
+            "linux-headers-$(uname -r)" \
+            pkg-config \
+            build-essential \
+            protobuf-compiler
+
+      - name: Install bpf-linker
+        run: cargo install bpf-linker --version 0.10.3
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ffi-assurance
+
+      - name: Run Miri + ASAN script
+        run: bash ./run_memory_checks.sh

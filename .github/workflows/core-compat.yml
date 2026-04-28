@@ -1,0 +1,94 @@
+# =============================================================================
+# CO-RE / eBPF compatibility matrix (hosted runners)
+# =============================================================================
+# Runs BPF verifier load + tracepoint attach + synthetic mprotect on each Ubuntu
+# kernel offered by GitHub Actions. Fails the job if either test fails (strict gate).
+#
+# Note: This complements (does not replace) the Vagrant matrix under scripts/vm/.
+# =============================================================================
+
+name: Core compat
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  ebpf-matrix:
+    name: eBPF smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          # ubuntu-20.04 is deprecated / often unavailable on GitHub-hosted runners; 22.04+ covers
+          # production 5.15+ kernels while still exercising verifier differences across 5.x/6.x.
+          - ubuntu-22.04
+          - ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install nightly Rust (eBPF / build-std)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install eBPF build dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            llvm \
+            libelf-dev \
+            zlib1g-dev \
+            linux-headers-generic \
+            "linux-headers-$(uname -r)" \
+            pkg-config \
+            build-essential \
+            protobuf-compiler
+
+      - name: Install bpf-linker
+        run: cargo install bpf-linker --version 0.10.3
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "core-compat-${{ matrix.os }}"
+
+      - name: Build workspace (release eBPF object)
+        run: cargo build --release -p aegis-ebpf --verbose
+
+      - name: Verifier load (BPF_PROG_LOAD for tracepoints)
+        run: |
+          set -euxo pipefail
+          sudo -E env \
+            "PATH=${PATH}" \
+            "HOME=${HOME}" \
+            "RUSTUP_HOME=${RUSTUP_HOME:-${HOME}/.rustup}" \
+            "CARGO_HOME=${CARGO_HOME:-${HOME}/.cargo}" \
+            cargo test --release --test verifier_load_test -p aegis-ebpf -- --ignored --nocapture
+
+      - name: Tracepoint attach + ringbuf (synthetic mprotect)
+        run: |
+          set -euxo pipefail
+          sudo -E env \
+            "PATH=${PATH}" \
+            "HOME=${HOME}" \
+            "RUSTUP_HOME=${RUSTUP_HOME:-${HOME}/.rustup}" \
+            "CARGO_HOME=${CARGO_HOME:-${HOME}/.cargo}" \
+            cargo test --release --test tracepoint_attach_test -p aegis-ebpf -- --ignored --nocapture
