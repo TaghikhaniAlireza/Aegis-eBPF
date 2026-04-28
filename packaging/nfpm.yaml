@@ -1,0 +1,37 @@
+# nFPM package definition for aegis-agent (.deb).
+# Set VERSION_TAG in the environment (e.g. 1.2.3 from tag v1.2.3) before running nfpm.
+
+name: aegis-agent
+arch: amd64
+platform: linux
+version: "${VERSION_TAG}"
+version_schema: semver
+maintainer: "Aegis eBPF Maintainers <https://github.com/TaghikhaniAlireza/Aegis-eBPF>"
+description: "Aegis eBPF security agent — syscall monitoring and YAML rule engine."
+homepage: "https://github.com/TaghikhaniAlireza/Aegis-eBPF"
+license: "MIT OR Apache-2.0"
+
+contents:
+  - src: ./build/aegis-agent
+    dst: /usr/bin/aegis-agent
+    file_info:
+      mode: 0755
+
+  - src: ./target/release/libaegis_ebpf.so
+    dst: /usr/lib/libaegis_ebpf.so
+
+  - src: ./packaging/aegis.service
+    dst: /etc/systemd/system/aegis.service
+
+  - src: ./packaging/config.yaml
+    dst: /etc/aegis/config.yaml
+    type: config
+
+  - src: ./packaging/rules.yaml
+    dst: /etc/aegis/rules.yaml
+    type: config
+
+scripts:
+  postinstall: ./packaging/postinst.sh
+  preremove: ./packaging/prerm.sh
+  postremove: ./packaging/postrm.sh

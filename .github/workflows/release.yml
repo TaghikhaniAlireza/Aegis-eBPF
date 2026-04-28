@@ -1,10 +1,10 @@
 # =============================================================================
-# Aegis-eBPF — GitHub Release (FFI artifacts)
+# Aegis-eBPF — GitHub Release
 # =============================================================================
-# Pushing a tag `v*` builds the release `libaegis_ebpf.so` + `libaegis_ebpf.a`, bundles them with `aegis.h`,
-# and publishes a GitHub Release with `aegis-ebpf-linux-amd64.tar.gz`.
+# Tag push `v*`: release Rust FFI tarball, build aegis-agent (CGO + static Rust),
+# produce .deb via nFPM, and publish a GitHub Release.
 #
-# `aegis-ebpf` requires nightly + `rust-src` + `bpf-linker` for the nested eBPF build (same as CI).
+# Rust workspace needs nightly + rust-src + bpf-linker for the nested eBPF build.
 # =============================================================================
 
 name: Release
@@ -19,6 +19,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  NFPM_VERSION: "2.41.2"
 
 jobs:
   release:
@@ -35,6 +36,12 @@ jobs:
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.21"
+          cache-dependency-path: clients/go/go.sum
 
       - name: Install eBPF build dependencies
         run: |
@@ -55,10 +62,31 @@ jobs:
       - name: Install bpf-linker
         run: cargo install bpf-linker --version 0.10.3
 
-      - name: Build release workspace
+      - name: Install nFPM
+        run: |
+          set -euxo pipefail
+          curl -sL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | sudo tar xz -C /usr/local/bin nfpm
+          nfpm --version
+
+      - name: Build release workspace (Rust)
         run: cargo build --release --verbose
 
-      - name: Stage FFI artifacts and create tarball
+      - name: Build aegis-agent (Go + CGO, static Rust release lib)
+        run: |
+          set -euxo pipefail
+          mkdir -p build
+          cd clients/go
+          CGO_ENABLED=1 go build -tags aegis_static_release -o "${GITHUB_WORKSPACE}/build/aegis-agent" ./cmd/aegis-agent
+
+      - name: Package .deb with nFPM
+        run: |
+          set -euxo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          export VERSION_TAG="${VERSION}"
+          nfpm package --config packaging/nfpm.yaml --packager deb --target "${GITHUB_WORKSPACE}"
+          ls -la "${GITHUB_WORKSPACE}/"*.deb
+
+      - name: Stage FFI tarball (lib + header)
         run: |
           set -euxo pipefail
           STAGE="${RUNNER_TEMP}/aegis-ebpf-release"
@@ -72,20 +100,21 @@ jobs:
           if [[ -f "${HEADER}" ]]; then
             cp -v "${HEADER}" "${STAGE}/"
           else
-            echo "::warning::aegis.h not found at ${HEADER}; tarball will contain only the .so"
+            echo "::warning::aegis.h not found at ${HEADER}; tarball will contain only libraries"
           fi
 
           tar -czvf "${GITHUB_WORKSPACE}/aegis-ebpf-linux-amd64.tar.gz" -C "${STAGE}" .
           ls -la "${GITHUB_WORKSPACE}/aegis-ebpf-linux-amd64.tar.gz"
           tar -tzvf "${GITHUB_WORKSPACE}/aegis-ebpf-linux-amd64.tar.gz"
 
-      - name: Create GitHub Release and upload asset
+      - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          # Tag that triggered the workflow → release name / target
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          files: aegis-ebpf-linux-amd64.tar.gz
+          files: |
+            aegis-ebpf-linux-amd64.tar.gz
+            *.deb
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

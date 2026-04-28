@@ -1,6 +1,6 @@
 # Convenience targets from the repository root (see also aegis-ebpf/Makefile).
 
-.PHONY: rust-build rust-build-release go-test go-test-release clients-go-test build-agent fmt clippy
+.PHONY: rust-build rust-build-release go-test go-test-release clients-go-test build-agent build-agent-release pack-deb fmt clippy
 
 rust-build:
 	cargo build -p aegis-ebpf
@@ -22,6 +22,15 @@ clients-go-test: rust-build
 build-agent: rust-build
 	mkdir -p build
 	cd clients/go && CGO_ENABLED=1 go build -o ../../build/aegis-agent ./cmd/aegis-agent
+
+build-agent-release: rust-build-release
+	mkdir -p build
+	cd clients/go && CGO_ENABLED=1 go build -tags aegis_static_release -o ../../build/aegis-agent ./cmd/aegis-agent
+
+# Requires nfpm on PATH and VERSION_TAG (e.g. 0.1.0). Example: VERSION_TAG=0.1.0 make pack-deb
+pack-deb: build-agent-release
+	test -n "$(VERSION_TAG)" || (echo "set VERSION_TAG, e.g. VERSION_TAG=0.1.0" && false)
+	VERSION_TAG=$(VERSION_TAG) nfpm package --config packaging/nfpm.yaml --packager deb --target .
 
 fmt:
 	cargo +nightly fmt --all --check
