@@ -10,6 +10,9 @@
 //
 //	AEGIS_RULES_FILE=/absolute/path/to/rules.yaml
 //
+// Optional: AEGIS_LOG_LEVEL=TRACE|INFO|SUPPRESSED|EVENT|ALERT filters Rust [Aegis][LEVEL] lines on stderr
+// (see docs/aegis_log_level.md). This example calls SetLogLevel after InitEngine when the env var is set.
+//
 // For a minimal demo only (whoami), set:
 //
 //	AEGIS_RULES_DEMO=1
@@ -22,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/aegis-ebpf/sdk/clients/go/aegis"
@@ -85,6 +89,23 @@ func loadRulesYAMLFromPath(path string) (yaml string, abs string, err error) {
 	return string(data), abs, nil
 }
 
+func applyAegisLogLevelFromEnv(s string) error {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "TRACE":
+		return aegis.SetLogLevel(aegis.LogLevelTrace)
+	case "INFO":
+		return aegis.SetLogLevel(aegis.LogLevelInfo)
+	case "SUPPRESSED":
+		return aegis.SetLogLevel(aegis.LogLevelSuppressed)
+	case "EVENT":
+		return aegis.SetLogLevel(aegis.LogLevelEvent)
+	case "ALERT":
+		return aegis.SetLogLevel(aegis.LogLevelAlert)
+	default:
+		return fmt.Errorf("unknown AEGIS_LOG_LEVEL %q (want TRACE, INFO, SUPPRESSED, EVENT, ALERT)", s)
+	}
+}
+
 func main() {
 	if os.Geteuid() != 0 {
 		fmt.Fprintln(os.Stderr, "This example must run as root (CAP_BPF / tracepoint attach).")
@@ -115,6 +136,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	if lvl := os.Getenv("AEGIS_LOG_LEVEL"); lvl != "" {
+		if err := applyAegisLogLevelFromEnv(lvl); err != nil {
+			fmt.Fprintf(os.Stderr, "AEGIS_LOG_LEVEL: %v\n", err)
+		}
+	}
 	defer func() { _ = aegis.StopPipeline() }()
 
 	rulesLabel, err := loadRulesForEngine()
@@ -130,7 +156,8 @@ func main() {
 	}
 
 	fmt.Println("Aegis monitor running. Rules:", rulesLabel)
-	fmt.Println("Lines: ALERT = rule match, EVENT = observation (no rule), SUPPRESSED* = YAML suppressions (see tests/simulations/rules.yaml).")
+	fmt.Println("Stdout labels (ALERT / EVENT / SUPPRESSED_*): from JSON callback — not filtered by AEGIS_LOG_LEVEL.")
+	fmt.Println("Stderr [Aegis][LEVEL] lines: filtered by AEGIS_LOG_LEVEL — see docs/aegis_log_level.md")
 	fmt.Println("Try: whoami  |  python3 tests/simulations/attack_simulator.py  (from repo root)")
 	fmt.Println("Ctrl+C to exit.")
 

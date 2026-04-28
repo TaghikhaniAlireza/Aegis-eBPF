@@ -23,6 +23,8 @@ Rules are validated at load time (syntax, syscall names, regex fields, cross-fie
 
 There is no built-in search path list in the core library; embedders choose defaults (CLI flags, env vars, `/etc`, etc.).
 
+**Aegis stderr filter:** see [Aegis log levels (`AEGIS_LOG_LEVEL`)](aegis_log_level.md) — how it differs from stdout labels in the Go example and from `RUST_LOG`.
+
 ## Suppression (trusted processes / false-positive control)
 
 A second top-level key, `suppressions`, lists **suppression entries** that use the **same `conditions` language** as rules (no `stateful` block). When an event matches at least one suppression entry, **alerts are not fired** for that event, but rules are still evaluated. The JSON `StandardizedEvent` (FFI / Go callback) then includes:
