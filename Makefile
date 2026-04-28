@@ -1,6 +1,6 @@
 # Convenience targets from the repository root (see also aegis-ebpf/Makefile).
 
-.PHONY: rust-build rust-build-release go-test go-test-release clients-go-test fmt clippy
+.PHONY: rust-build rust-build-release go-test go-test-release clients-go-test build-agent fmt clippy
 
 rust-build:
 	cargo build -p aegis-ebpf
@@ -17,6 +17,11 @@ go-test-release: rust-build-release
 
 clients-go-test: rust-build
 	cd clients/go/aegis && CGO_ENABLED=1 go test -race -v ./...
+
+# Standalone agent (CGO + static Rust lib from debug build).
+build-agent: rust-build
+	mkdir -p build
+	cd clients/go && CGO_ENABLED=1 go build -o ../../build/aegis-agent ./cmd/aegis-agent
 
 fmt:
 	cargo +nightly fmt --all --check
