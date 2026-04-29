@@ -47,7 +47,7 @@ jobs:
     name: eBPF smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         os:
           - ubuntu-22.04

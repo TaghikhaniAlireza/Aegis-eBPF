@@ -1600,12 +1600,22 @@ rules:
         let child_pid = child.id();
 
         let environ_path = format!("/proc/{child_pid}/environ");
-        for _ in 0..50 {
-            if fs::metadata(&environ_path).is_ok() {
-                break;
+        // Wait until `environ` is populated with LD_PRELOAD= (metadata alone is not enough).
+        let mut ready = false;
+        for _ in 0..200 {
+            if let Ok(raw) = fs::read(&environ_path) {
+                if raw.windows(11).any(|w| w == b"LD_PRELOAD=") {
+                    ready = true;
+                    break;
+                }
             }
             thread::sleep(Duration::from_millis(10));
         }
+        assert!(
+            ready,
+            "timeout waiting for LD_PRELOAD= in {}",
+            environ_path
+        );
 
         struct KillChild(std::process::Child);
         impl Drop for KillChild {

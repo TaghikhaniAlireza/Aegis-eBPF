@@ -38,6 +38,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: mace-ebpf
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-push-sign:

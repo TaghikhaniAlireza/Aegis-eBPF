@@ -10,6 +10,7 @@
 
 # -----------------------------------------------------------------------------
 # Stage 1: Rust release build (userspace lib + embedded eBPF via build.rs)
+# Requires kernel UAPI headers for bpf_helpers / vmlinux.h during nested bpf build.
 # -----------------------------------------------------------------------------
 FROM rust:bookworm AS rust-builder
 
@@ -20,6 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 		clang llvm libelf-dev zlib1g-dev pkg-config protobuf-compiler \
 		build-essential ca-certificates curl \
 		gcc-x86-64-linux-gnu gcc-aarch64-linux-gnu \
+		linux-headers-generic \
+		"linux-headers-$(uname -r)" \
 	&& rm -rf /var/lib/apt/lists/*
 
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \

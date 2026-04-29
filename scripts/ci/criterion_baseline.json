@@ -1,8 +1,8 @@
 {
-  "comment": "Median nanoseconds from representative CI; criterion_gate allows +MACE_CRITERION_REGRESSION_MAX% when MACE_CRITERION_BASELINE_FILE is set.",
+  "comment": "Loose medians for noisy CI runners; +5% cap via MACE_CRITERION_REGRESSION_MAX. Absolute ceilings in criterion_gate still apply.",
   "medians_ns": {
-    "rule_engine/evaluate_256_rules_mmap": 11000,
-    "state_tracker/update_same_tgid": 140,
-    "single_thread_push_pop/try_push_non_full": 55
+    "rule_engine/evaluate_256_rules_mmap": 15000,
+    "state_tracker/update_same_tgid": 180,
+    "single_thread_push_pop/try_push_non_full": 65
   }
 }

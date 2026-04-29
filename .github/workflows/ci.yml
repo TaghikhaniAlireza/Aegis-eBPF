@@ -239,7 +239,8 @@ jobs:
     name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: true
+      # One OS row must not abort the other (e.g. Criterion noise on 24.04 vs full BPF on 22.04).
+      fail-fast: false
       matrix:
         os:
           - ubuntu-22.04
