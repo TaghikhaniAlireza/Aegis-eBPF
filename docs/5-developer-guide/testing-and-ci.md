@@ -48,7 +48,11 @@ Runs **`./run_memory_checks.sh`**: **Miri** on `ffi` + `arena` modules and **Add
 
 ## Criterion regression gate (in `CI` job)
 
-After building with the **prometheus** feature, **`scripts/ci/criterion_gate.py`** parses **`cargo bench`** output for **`arena_benchmark`** and **`rule_engine_bench`** and fails if median times exceed configurable ceilings (defaults include ~5% slack over typical CI medians for 256-rule evaluation, arena `try_push`, and state tracker updates).
+After building with the **prometheus** feature, **`scripts/ci/criterion_gate.py`** parses **`cargo bench`** output for **`arena_benchmark`** and **`rule_engine_bench`** and fails if median times exceed configurable **absolute ceilings**.
+
+The workflow sets **`MACE_CRITERION_BASELINE_FILE`** to **`scripts/ci/criterion_baseline.json`**, which stores committed **baseline medians** (nanoseconds). The gate then requires each tracked median to stay within **`MACE_CRITERION_REGRESSION_MAX`** percent above that baseline (default **5**), in addition to the absolute caps. Update the JSON when a deliberate performance change lands.
+
+**Concurrency:** workflow **`cancel-in-progress`** is scoped **per job** so parallel **`build-and-test`** matrix rows (e.g. 22.04 vs 24.04) do not cancel each other when pushes land mid-run.
 
 ## Workflow: `Docker` (`.github/workflows/docker-publish.yml`)
 

@@ -15,10 +15,15 @@ FROM rust:bookworm AS rust-builder
 
 WORKDIR /src
 
+# Cross GNU linkers for multi-arch Buildx (e.g. arm64 stage building x86_64 Rust artifacts).
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		clang llvm libelf-dev zlib1g-dev pkg-config protobuf-compiler \
 		build-essential ca-certificates curl \
+		gcc-x86-64-linux-gnu gcc-aarch64-linux-gnu \
 	&& rm -rf /var/lib/apt/lists/*
+
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+	CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 
 RUN rustup toolchain install nightly --profile minimal --component rust-src \
 	&& rustup toolchain install stable --profile minimal \

@@ -461,7 +461,7 @@ pub(crate) fn evaluate_rule_conditions(
         if event.inner.event_type != EventType::Execve {
             return false;
         }
-        let Some(env) = read_proc_environ_flat(event.inner.pid) else {
+        let Some(env) = read_proc_environ_flat(event.inner.tgid) else {
             return false;
         };
         if !conditions
