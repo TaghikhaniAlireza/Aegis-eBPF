@@ -3,7 +3,7 @@ Description=Mace eBPF Security Agent
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/mace-agent --config /etc/mace/config.yaml
+ExecStart=/usr/bin/mace-agent run --config /etc/mace/config.yaml
 Restart=always
 User=root
 

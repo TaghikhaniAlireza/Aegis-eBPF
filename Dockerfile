@@ -77,4 +77,4 @@ COPY --from=rust-builder /out/bpf/mace-ebpf /opt/mace/bpf/mace-ebpf
 USER root
 
 ENTRYPOINT ["/usr/bin/mace-agent"]
-CMD ["--config", "/etc/mace/config.yaml"]
+CMD ["run", "--config", "/etc/mace/config.yaml"]

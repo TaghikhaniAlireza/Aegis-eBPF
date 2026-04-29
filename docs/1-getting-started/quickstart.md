@@ -19,7 +19,7 @@ docker run --rm -it --privileged \
   ghcr.io/taghikhanialireza/mace-ebpf:latest
 ```
 
-The container entrypoint is **`mace-agent`** with default args **`--config /etc/mace/config.yaml`**.
+The container entrypoint is **`mace-agent`** with default args **`run --config /etc/mace/config.yaml`**.
 
 ## What is inside the image
 

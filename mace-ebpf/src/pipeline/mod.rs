@@ -8,6 +8,7 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
+use aya::Ebpf;
 use log::warn;
 use mace_ebpf_common::MemoryEvent;
 #[cfg(feature = "otel")]
@@ -22,8 +23,9 @@ use crate::{
     cmdline_context::CmdlineContextTracker,
     logging, mace_log,
     observability::metrics::{
-        record_alert_fired, record_event_ingested as record_pipeline_event_ingested,
-        record_pipeline_latency, record_rule_eval_ns, update_reorder_buffer_size,
+        record_alert_fired, record_channel_drop_enriched, record_channel_drop_ordered,
+        record_event_ingested as record_pipeline_event_ingested, record_pipeline_latency,
+        record_reorder_deadline_flush_events, record_rule_eval_ns, update_reorder_buffer_size,
         update_worker_queue_depth,
     },
     rules::{RuleError, loader::RuleSet, watcher::RuleWatcher},
@@ -79,6 +81,8 @@ pub struct PipelineHandle {
     shutdown_tx: oneshot::Sender<()>,
     #[allow(dead_code)]
     rules: Option<PipelineRules>,
+    /// Live eBPF object while the sensor runs (for health / map inspection). `None` in unit tests.
+    pub ebpf: Option<std::sync::Arc<std::sync::Mutex<aya::Ebpf>>>,
 }
 
 #[derive(Debug)]
@@ -132,7 +136,7 @@ pub async fn start_pipeline(
     sensor_config: SensorConfig,
     mut pipeline_config: config::PipelineConfig,
     enricher: Arc<dyn ContextEnricher>,
-) -> Result<PipelineHandle, PipelineError> {
+) -> Result<(PipelineHandle, Arc<Mutex<Ebpf>>), PipelineError> {
     assert!(
         pipeline_config.partition_count.is_power_of_two(),
         "partition_count must be a power of 2"
@@ -146,16 +150,18 @@ pub async fn start_pipeline(
     }
 
     let rules = init_pipeline_rules(&pipeline_config)?;
-    let raw_rx = start_sensor(sensor_config)
+    let (raw_rx, ebpf) = start_sensor(sensor_config)
         .await
         .map_err(PipelineError::SensorStartFailed)?;
-    Ok(spawn_pipeline_from_raw(
+    let handle = spawn_pipeline_from_raw(
         raw_rx,
         pipeline_config,
         enricher,
         rules.current(),
         Some(rules),
-    ))
+        Some(std::sync::Arc::clone(&ebpf)),
+    );
+    Ok((handle, ebpf))
 }
 
 #[cfg(test)]
@@ -171,6 +177,7 @@ pub(crate) fn start_pipeline_from_receiver_for_tests(
         enricher,
         rules.current(),
         Some(rules),
+        None,
     ))
 }
 
@@ -181,7 +188,7 @@ pub(crate) fn start_pipeline_from_receiver_for_tests_with_rules(
     enricher: Arc<dyn ContextEnricher>,
     rules: Arc<ArcSwap<RuleSet>>,
 ) -> PipelineHandle {
-    spawn_pipeline_from_raw(raw_rx, pipeline_config, enricher, rules, None)
+    spawn_pipeline_from_raw(raw_rx, pipeline_config, enricher, rules, None, None)
 }
 
 fn spawn_pipeline_from_raw(
@@ -190,6 +197,7 @@ fn spawn_pipeline_from_raw(
     enricher: Arc<dyn ContextEnricher>,
     rules: Arc<ArcSwap<RuleSet>>,
     keep_rules: Option<PipelineRules>,
+    ebpf: Option<Arc<Mutex<Ebpf>>>,
 ) -> PipelineHandle {
     assert!(
         pipeline_config.partition_count.is_power_of_two(),
@@ -233,6 +241,7 @@ fn spawn_pipeline_from_raw(
         ordered_rx: final_rx,
         shutdown_tx,
         rules: keep_rules,
+        ebpf,
     }
 }
 
@@ -253,6 +262,7 @@ async fn run_enrichment_worker(
                         .await
                         .is_err()
                     {
+                        record_channel_drop_enriched();
                         return;
                     }
                 }
@@ -270,6 +280,7 @@ async fn run_enrichment_worker(
                     .await
                     .is_err()
                 {
+                    record_channel_drop_enriched();
                     return;
                 }
             }
@@ -351,8 +362,12 @@ async fn run_reorder_task(
                     }
                 }
                 _ = &mut sleep => {
+                    let n = heap.len();
                     if flush_heap(&mut heap, &ordered_tx).await.is_err() {
                         return;
+                    }
+                    if n > 0 {
+                        record_reorder_deadline_flush_events(n);
                     }
                     deadline = None;
                 }
@@ -579,6 +594,7 @@ async fn run_partition_router(
     while let Some(event) = ordered_rx.recv().await {
         let idx = route_partition_index(event.inner.tgid, partition_count);
         if partition_txs[idx].send(event).await.is_err() {
+            record_channel_drop_ordered();
             warn!("partition worker channel closed for index={idx}");
         }
     }

@@ -5,5 +5,8 @@ logging:
   path: /var/log/mace/events.log
   format: json
 
+audit:
+  path: /var/log/mace/audit.log
+
 rules:
   path: /etc/mace/rules.yaml

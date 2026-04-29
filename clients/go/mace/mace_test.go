@@ -45,6 +45,28 @@ func TestInitEngineWithConfig_nilLogLevel(t *testing.T) {
 	}
 }
 
+func TestEngineHealthJSON_withoutPipeline(t *testing.T) {
+	if err := InitEngine(); err != nil {
+		t.Fatal(err)
+	}
+	const yaml = "rules: []\nsuppressions: []\n"
+	if err := LoadRules(yaml); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4096)
+	s, err := EngineHealthJSON(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v map[string]any
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		t.Fatalf("json: %v body=%q", err, s)
+	}
+	if v["pipeline_running"] != false {
+		t.Fatalf("pipeline_running: got %v want false", v["pipeline_running"])
+	}
+}
+
 func TestNewClient_duplicateFails(t *testing.T) {
 	c1, err := NewClient(4)
 	if err != nil {

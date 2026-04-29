@@ -5,14 +5,16 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::Once,
+    sync::{Arc, Mutex, Once},
     time::Duration,
 };
 
 pub mod alert;
+pub mod audit;
 pub mod cmdline_context;
 pub mod enrichment;
 pub mod ffi;
+pub mod kernel_health;
 pub mod logging;
 pub mod observability;
 pub mod passwd;
@@ -77,7 +79,9 @@ impl Default for SensorConfig {
     }
 }
 
-pub async fn start_sensor(config: SensorConfig) -> anyhow::Result<mpsc::Receiver<MemoryEvent>> {
+pub async fn start_sensor(
+    config: SensorConfig,
+) -> anyhow::Result<(mpsc::Receiver<MemoryEvent>, Arc<Mutex<Ebpf>>)> {
     bump_memlock_rlimit();
 
     let mut ebpf = load_ebpf().await?;
@@ -121,16 +125,30 @@ pub async fn start_sensor(config: SensorConfig) -> anyhow::Result<mpsc::Receiver
 
     populate_allowlist(&mut ebpf, &config.allowlist_pids)?;
 
-    let ring_buf = RingBuf::try_from(
-        ebpf.take_map("EVENTS")
-            .context("eBPF map EVENTS not found")?,
-    )?;
+    let ebpf = Arc::new(Mutex::new(ebpf));
+
+    let ring_buf = {
+        let mut g = ebpf.lock().expect("ebpf mutex poisoned");
+        RingBuf::try_from(g.take_map("EVENTS").context("eBPF map EVENTS not found")?)?
+    };
     let mut ring_buf =
         tokio::io::unix::AsyncFd::with_interest(ring_buf, tokio::io::Interest::READABLE)?;
 
-    let (tx, rx) = mpsc::channel(config.channel_capacity.max(1));
+    let ebpf_stats = Arc::clone(&ebpf);
     tokio::task::spawn(async move {
-        let _ebpf = ebpf;
+        let _keep_alive = ebpf_stats;
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if let Ok(mut g) = _keep_alive.lock() {
+                kernel_health::refresh_kernel_stats_from_ebpf(&mut g);
+            }
+        }
+    });
+
+    let (tx, rx) = mpsc::channel(config.channel_capacity.max(1));
+    let ebpf_ring = Arc::clone(&ebpf);
+    tokio::task::spawn(async move {
+        let _keep_alive = ebpf_ring;
         loop {
             let mut guard = match ring_buf.readable_mut().await {
                 Ok(guard) => guard,
@@ -148,7 +166,7 @@ pub async fn start_sensor(config: SensorConfig) -> anyhow::Result<mpsc::Receiver
         }
     });
 
-    Ok(rx)
+    Ok((rx, ebpf))
 }
 
 fn bump_memlock_rlimit() {

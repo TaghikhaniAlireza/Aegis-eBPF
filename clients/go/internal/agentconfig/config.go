@@ -4,6 +4,7 @@ package agentconfig
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -13,6 +14,13 @@ import (
 type Config struct {
 	Logging LoggingConfig `yaml:"logging"`
 	Rules   RulesConfig   `yaml:"rules"`
+	// Audit optional: append-only JSON lines for engine API calls (MACE_AUDIT_LOG_PATH in Rust).
+	Audit AuditConfig `yaml:"audit"`
+}
+
+// AuditConfig enables Phase 4.1 audit logging when Path is set.
+type AuditConfig struct {
+	Path string `yaml:"path"`
 }
 
 // LoggingConfig controls where security events are written (sole sink for events).
@@ -55,6 +63,11 @@ func (c *Config) Validate() error {
 
 	if strings.TrimSpace(c.Rules.Path) == "" {
 		return fmt.Errorf("rules.path is required")
+	}
+	if strings.TrimSpace(c.Audit.Path) != "" {
+		if !filepath.IsAbs(c.Audit.Path) {
+			return fmt.Errorf("audit.path must be absolute, got %q", c.Audit.Path)
+		}
 	}
 	return nil
 }

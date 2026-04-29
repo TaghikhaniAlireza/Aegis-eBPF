@@ -7,7 +7,7 @@ use aya_ebpf::{
         bpf_probe_read_user, bpf_probe_read_user_str_bytes,
     },
     macros::{map, tracepoint},
-    maps::{LruHashMap, PerCpuArray, RingBuf},
+    maps::{Array, LruHashMap, PerCpuArray, RingBuf},
     programs::TracePointContext,
 };
 use aya_log_ebpf::warn;
@@ -23,6 +23,28 @@ const PROT_EXEC: u64 = 0x4;
 const ALLOWLIST_MAX_ENTRIES: u32 = 1_024;
 const RATE_LIMIT_MAX_ENTRIES: u32 = 10_240;
 const RATE_LIMIT_INTERVAL_NS: u64 = 100_000_000; // 100ms per PID
+
+/// Global kernel-side counters (single `BPF_ARRAY` of 4 u64 slots; userspace reads via `Array`).
+/// 0: ringbuf output failures; 1: pending-map insert failures; 2: allowlist hits; 3: mmap rate-limit hits.
+#[map]
+static KERNEL_STATS: Array<u64> = Array::with_max_entries(4, 0);
+
+#[inline(always)]
+fn bump_kernel_stat(idx: u32) {
+    if let Some(ptr) = KERNEL_STATS.get_ptr_mut(idx) {
+        unsafe {
+            *ptr = (*ptr).saturating_add(1);
+        }
+    }
+}
+
+#[inline(always)]
+fn ringbuf_output_sample(ctx: &TracePointContext, wire: &[u8]) {
+    if EVENTS.output::<[u8]>(wire, 0).is_err() {
+        bump_kernel_stat(0);
+        warn!(ctx, "ring buffer output failed");
+    }
+}
 
 /// Per-CPU scratch for execve argv join and zeroed payloads for other syscalls (no large stack vars).
 #[repr(C)]
@@ -155,6 +177,7 @@ fn store_pending_event_for_mmap(ctx: &TracePointContext) -> u32 {
     let tgid = (pid_tgid >> 32) as u32;
 
     if unsafe { ALLOWLIST.get(&tgid) }.is_some() {
+        bump_kernel_stat(2);
         return 0;
     }
 
@@ -165,6 +188,7 @@ fn store_pending_event_for_mmap(ctx: &TracePointContext) -> u32 {
         let prev = unsafe { RATE_LIMITED_COUNT.get(&tgid).copied().unwrap_or(0) };
         let next = prev.saturating_add(1);
         let _ = RATE_LIMITED_COUNT.insert(&tgid, &next, 0);
+        bump_kernel_stat(3);
         return 0;
     }
 
@@ -185,6 +209,7 @@ fn store_pending_event_for_mmap(ctx: &TracePointContext) -> u32 {
 
     if let Err(err) = pending_syscalls.insert(pid_tgid, &kernel, 0) {
         warn!(ctx, "pending syscall insert failed: {}", err);
+        bump_kernel_stat(1);
         return 1;
     }
 
@@ -192,6 +217,7 @@ fn store_pending_event_for_mmap(ctx: &TracePointContext) -> u32 {
     if let Err(err) = pending_payload.insert(pid_tgid, payload_ref, 0) {
         let _ = pending_syscalls.remove(&pid_tgid);
         warn!(ctx, "pending payload insert failed: {}", err);
+        bump_kernel_stat(1);
         return 1;
     }
 
@@ -204,6 +230,7 @@ fn store_pending_event_for_execve(ctx: &TracePointContext) -> u32 {
     let tgid = (pid_tgid >> 32) as u32;
 
     if unsafe { ALLOWLIST.get(&tgid) }.is_some() {
+        bump_kernel_stat(2);
         return 0;
     }
 
@@ -223,6 +250,7 @@ fn store_pending_event_for_execve(ctx: &TracePointContext) -> u32 {
 
     if let Err(err) = pending_syscalls.insert(pid_tgid, &kernel, 0) {
         warn!(ctx, "pending syscall insert failed: {}", err);
+        bump_kernel_stat(1);
         return 1;
     }
 
@@ -230,6 +258,7 @@ fn store_pending_event_for_execve(ctx: &TracePointContext) -> u32 {
     if let Err(err) = pending_payload.insert(pid_tgid, payload_ref, 0) {
         let _ = pending_syscalls.remove(&pid_tgid);
         warn!(ctx, "pending payload insert failed: {}", err);
+        bump_kernel_stat(1);
         return 1;
     }
 
@@ -242,6 +271,7 @@ fn store_pending_event_for_openat(ctx: &TracePointContext) -> u32 {
     let tgid = (pid_tgid >> 32) as u32;
 
     if unsafe { ALLOWLIST.get(&tgid) }.is_some() {
+        bump_kernel_stat(2);
         return 0;
     }
 
@@ -261,6 +291,7 @@ fn store_pending_event_for_openat(ctx: &TracePointContext) -> u32 {
 
     if let Err(err) = pending_syscalls.insert(pid_tgid, &kernel, 0) {
         warn!(ctx, "pending syscall insert failed: {}", err);
+        bump_kernel_stat(1);
         return 1;
     }
 
@@ -268,6 +299,7 @@ fn store_pending_event_for_openat(ctx: &TracePointContext) -> u32 {
     if let Err(err) = pending_payload.insert(pid_tgid, payload_ref, 0) {
         let _ = pending_syscalls.remove(&pid_tgid);
         warn!(ctx, "pending payload insert failed: {}", err);
+        bump_kernel_stat(1);
         return 1;
     }
 
@@ -295,6 +327,7 @@ fn store_pending_enter_clear(ctx: &TracePointContext, syscall: MemorySyscall) ->
     let tgid = (pid_tgid >> 32) as u32;
 
     if unsafe { ALLOWLIST.get(&tgid) }.is_some() {
+        bump_kernel_stat(2);
         return 0;
     }
 
@@ -314,6 +347,7 @@ fn store_pending_enter_clear(ctx: &TracePointContext, syscall: MemorySyscall) ->
 
     if let Err(err) = pending_syscalls.insert(pid_tgid, &kernel, 0) {
         warn!(ctx, "pending syscall insert failed: {}", err);
+        bump_kernel_stat(1);
         return 1;
     }
 
@@ -321,6 +355,7 @@ fn store_pending_enter_clear(ctx: &TracePointContext, syscall: MemorySyscall) ->
     if let Err(err) = pending_payload.insert(pid_tgid, payload_ref, 0) {
         let _ = pending_syscalls.remove(&pid_tgid);
         warn!(ctx, "pending payload insert failed: {}", err);
+        bump_kernel_stat(1);
         return 1;
     }
 
@@ -365,9 +400,7 @@ fn emit_exit_mmap(ctx: &TracePointContext) -> u32 {
     }
     let wire_len = core::mem::size_of::<RingBufferSample>();
     let wire = unsafe { core::slice::from_raw_parts(out_ptr.cast::<u8>(), wire_len) };
-    if EVENTS.output::<[u8]>(wire, 0).is_err() {
-        warn!(ctx, "ring buffer output failed");
-    }
+    ringbuf_output_sample(ctx, wire);
     let _ = pending_syscalls.remove(&pid_tgid);
     let _ = pending_payload.remove(&pid_tgid);
     0
@@ -417,9 +450,7 @@ fn emit_exit_mprotect(ctx: &TracePointContext) -> u32 {
     }
     let wire_len = core::mem::size_of::<RingBufferSample>();
     let wire = unsafe { core::slice::from_raw_parts(out_ptr.cast::<u8>(), wire_len) };
-    if EVENTS.output::<[u8]>(wire, 0).is_err() {
-        warn!(ctx, "ring buffer output failed");
-    }
+    ringbuf_output_sample(ctx, wire);
     let _ = pending_syscalls.remove(&pid_tgid);
     let _ = pending_payload.remove(&pid_tgid);
     0
@@ -463,9 +494,7 @@ fn emit_exit_memfd_create(ctx: &TracePointContext) -> u32 {
     }
     let wire_len = core::mem::size_of::<RingBufferSample>();
     let wire = unsafe { core::slice::from_raw_parts(out_ptr.cast::<u8>(), wire_len) };
-    if EVENTS.output::<[u8]>(wire, 0).is_err() {
-        warn!(ctx, "ring buffer output failed");
-    }
+    ringbuf_output_sample(ctx, wire);
     let _ = pending_syscalls.remove(&pid_tgid);
     let _ = pending_payload.remove(&pid_tgid);
     0
@@ -518,9 +547,7 @@ fn emit_exit_always_kind(ctx: &TracePointContext, syscall: MemorySyscall) -> u32
     }
     let wire_len = core::mem::size_of::<RingBufferSample>();
     let wire = unsafe { core::slice::from_raw_parts(out_ptr.cast::<u8>(), wire_len) };
-    if EVENTS.output::<[u8]>(wire, 0).is_err() {
-        warn!(ctx, "ring buffer output failed");
-    }
+    ringbuf_output_sample(ctx, wire);
     let _ = pending_syscalls.remove(&pid_tgid);
     let _ = pending_payload.remove(&pid_tgid);
     0

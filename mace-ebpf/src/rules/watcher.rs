@@ -59,9 +59,19 @@ impl RuleWatcher {
                                 precompiled_for_thread
                                     .store(Arc::new(build_precompiled_map(&new_rules)));
                                 rules_for_thread.store(Arc::new(new_rules));
+                                crate::audit::record(
+                                    "rules_hot_reload",
+                                    &format!("path={}", path.display()),
+                                    true,
+                                );
                             }
                             Err(err) => {
                                 error!("rule reload failed: {err}");
+                                crate::audit::record(
+                                    "rules_hot_reload",
+                                    &format!("path={} error={err}", path.display()),
+                                    false,
+                                );
                             }
                         }
                     }

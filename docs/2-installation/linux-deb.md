@@ -42,7 +42,7 @@ Unit file excerpt (see `packaging/mace.service` for the canonical copy):
 
 ```ini
 [Service]
-ExecStart=/usr/bin/mace-agent --config /etc/mace/config.yaml
+ExecStart=/usr/bin/mace-agent run --config /etc/mace/config.yaml
 Restart=always
 User=root
 ```

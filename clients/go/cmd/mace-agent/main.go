@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/mace-ebpf/sdk/clients/go/internal/agentconfig"
@@ -23,24 +24,90 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	var configPath string
-	cmd := &cobra.Command{
-		Use:          "mace-agent",
-		Short:        "Mace eBPF security agent",
-		SilenceUsage: true,
+	root := &cobra.Command{
+		Use:   "mace-agent",
+		Short: "Mace eBPF security agent",
+	}
+	root.PersistentFlags().StringVarP(&configPath, "config", "c", "", "path to configuration file")
+
+	run := &cobra.Command{
+		Use:   "run",
+		Short: "Run the agent (default if no subcommand)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return run(configPath)
+			if configPath == "" {
+				return fmt.Errorf("--config is required")
+			}
+			return runAgent(configPath)
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to configuration file (required)")
-	_ = cmd.MarkFlagRequired("config")
-	return cmd
+	run.Flags().StringVarP(&configPath, "config", "c", "", "path to configuration file (required)")
+	_ = run.MarkFlagRequired("config")
+
+	status := &cobra.Command{
+		Use:   "status",
+		Short: "Print engine health JSON (requires same --config as the running agent for rules path context)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if configPath == "" {
+				return fmt.Errorf("--config is required")
+			}
+			return runStatus(configPath)
+		},
+	}
+	status.Flags().StringVarP(&configPath, "config", "c", "", "path to configuration file (required)")
+	_ = status.MarkFlagRequired("config")
+
+	root.AddCommand(run, status)
+	root.RunE = func(cmd *cobra.Command, args []string) error {
+		if configPath == "" {
+			return cmd.Help()
+		}
+		return runAgent(configPath)
+	}
+	return root
 }
 
-func run(configPath string) error {
+func prepareAuditEnv(path string) {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "mace-agent: audit log disabled (cannot create %q parent: %v)\n", p, err)
+		return
+	}
+	_ = os.Setenv("MACE_AUDIT_LOG_PATH", p)
+}
+
+func runStatus(configPath string) error {
 	cfg, err := agentconfig.Load(configPath)
 	if err != nil {
 		return err
 	}
+	prepareAuditEnv(cfg.Audit.Path)
+	if err := mace.InitEngine(); err != nil {
+		return fmt.Errorf("init engine: %w", err)
+	}
+	if _, err := os.Stat(cfg.Rules.Path); err != nil {
+		fmt.Fprintf(os.Stderr, "mace-agent status: warning: rules path %q not readable: %v\n", cfg.Rules.Path, err)
+	} else if err := mace.LoadRulesFile(cfg.Rules.Path); err != nil {
+		fmt.Fprintf(os.Stderr, "mace-agent status: warning: could not load rules %q: %v (health.rule_count may be 0)\n", cfg.Rules.Path, err)
+	}
+	buf := make([]byte, 8192)
+	s, err := mace.EngineHealthJSON(buf)
+	if err != nil {
+		return err
+	}
+	fmt.Println(s)
+	return nil
+}
+
+func runAgent(configPath string) error {
+	cfg, err := agentconfig.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	prepareAuditEnv(cfg.Audit.Path)
 
 	if err := os.MkdirAll(filepath.Dir(cfg.Logging.Path), 0755); err != nil {
 		return fmt.Errorf("create log directory: %w", err)
@@ -67,6 +134,9 @@ func run(configPath string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "mace-agent: logging security events to %s (format=%s)\n", cfg.Logging.Path, cfg.Logging.Format)
+	if p := strings.TrimSpace(cfg.Audit.Path); p != "" {
+		fmt.Fprintf(os.Stderr, "mace-agent: audit log enabled at %s (MACE_AUDIT_LOG_PATH)\n", p)
+	}
 
 	client, err := mace.NewClient(4096)
 	if err != nil {

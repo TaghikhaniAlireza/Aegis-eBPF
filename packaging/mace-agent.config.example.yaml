@@ -1,8 +1,18 @@
 # Example configuration for mace-agent (copy to /etc/mace/config.yaml).
 #
 # Security events are written only to logging.path in the chosen format.
+#
+# Optional audit log (append-only JSON lines): set audit.path to an absolute path.
+# The agent sets MACE_AUDIT_LOG_PATH before calling Rust InitEngine so FFI actions are recorded.
 
 logging:
+  path: /var/log/mace/events.log
+  format: json   # json | text
+
+audit:
+  path: /var/log/mace/audit.log
+
+rules:
   path: /var/log/mace/events.log
   format: json   # json | text
 

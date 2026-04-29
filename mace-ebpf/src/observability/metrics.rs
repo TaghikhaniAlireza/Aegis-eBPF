@@ -32,6 +32,17 @@ pub(crate) use record_metric;
 
 pub const EVENTS_INGESTED_TOTAL: &str = "mace_events_ingested_total";
 pub const EVENTS_DROPPED_TOTAL: &str = "mace_events_dropped_total";
+/// Kernel eBPF: ring buffer `reserve` / `output` failures (summed from per-CPU `KERNEL_STATS` map).
+pub const EVENTS_DROPPED_RINGBUF_FULL_TOTAL: &str = "mace_events_dropped_ringbuf_full_total";
+/// Kernel eBPF: pending syscall / payload LRU map insert failures (correlates with LRU eviction pressure).
+pub const EVENTS_FILTERED_BY_KERNEL_LRU_TOTAL: &str = "mace_events_filtered_by_kernel_lru_total";
+/// Userspace: events emitted from reorder heap when the reorder window deadline fires (timeout path).
+pub const EVENTS_DROPPED_REORDER_TIMEOUT_TOTAL: &str = "mace_events_dropped_reorder_timeout_total";
+/// Userspace: enriched → reorder channel full / closed (event not queued for reorder).
+pub const EVENTS_DROPPED_CHANNEL_ENRICHED_TOTAL: &str =
+    "mace_events_dropped_channel_enriched_total";
+/// Userspace: reorder → partition router channel full / closed.
+pub const EVENTS_DROPPED_CHANNEL_ORDERED_TOTAL: &str = "mace_events_dropped_channel_ordered_total";
 pub const ALERTS_FIRED_TOTAL: &str = "mace_alerts_fired_total";
 pub const PIPELINE_LATENCY_NS: &str = "mace_pipeline_latency_ns";
 pub const REORDER_BUFFER_SIZE: &str = "mace_reorder_buffer_size";
@@ -47,6 +58,37 @@ pub fn record_event_ingested() {
 #[inline]
 pub fn record_event_dropped() {
     record_metric!(counter: EVENTS_DROPPED_TOTAL);
+}
+
+#[inline]
+pub fn record_ringbuf_reserve_fail_kernel(n: u64) {
+    for _ in 0..n {
+        record_metric!(counter: EVENTS_DROPPED_RINGBUF_FULL_TOTAL);
+    }
+}
+
+#[inline]
+pub fn record_kernel_lru_insert_fail(n: u64) {
+    for _ in 0..n {
+        record_metric!(counter: EVENTS_FILTERED_BY_KERNEL_LRU_TOTAL);
+    }
+}
+
+#[inline]
+pub fn record_reorder_deadline_flush_events(n: usize) {
+    for _ in 0..n {
+        record_metric!(counter: EVENTS_DROPPED_REORDER_TIMEOUT_TOTAL);
+    }
+}
+
+#[inline]
+pub fn record_channel_drop_enriched() {
+    record_metric!(counter: EVENTS_DROPPED_CHANNEL_ENRICHED_TOTAL);
+}
+
+#[inline]
+pub fn record_channel_drop_ordered() {
+    record_metric!(counter: EVENTS_DROPPED_CHANNEL_ORDERED_TOTAL);
 }
 
 #[inline]
@@ -110,6 +152,7 @@ mod tests {
         record_pipeline_latency(1000);
         update_reorder_buffer_size(42);
         update_worker_queue_depth(0, 10);
+        record_channel_drop_ordered();
         record_rule_eval_ns("r1", 123);
     }
 }

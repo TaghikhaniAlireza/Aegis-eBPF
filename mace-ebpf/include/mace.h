@@ -124,6 +124,9 @@ int32_t mace_stop_pipeline(void);
 /* Mace core stderr filter: 0=TRACE,1=INFO,2=SUPPRESSED,3=EVENT,4=ALERT. Returns 0 on success. */
 int32_t mace_set_log_level(int32_t level);
 
+int32_t mace_allowlist_add_tgid(uint32_t tgid);
+int32_t mace_engine_health_json(char *out, size_t out_len);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

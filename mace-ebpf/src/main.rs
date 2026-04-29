@@ -3,7 +3,7 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let config = mace_ebpf::SensorConfig::default();
-    let mut rx = mace_ebpf::start_sensor(config).await?;
+    let (mut rx, _ebpf) = mace_ebpf::start_sensor(config).await?;
 
     log::info!("Sensor started. Listening for memory events...");
     while let Some(event) = rx.recv().await {

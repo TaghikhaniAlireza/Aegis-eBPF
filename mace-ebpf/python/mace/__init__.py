@@ -4,6 +4,14 @@ from __future__ import annotations
 
 from .alert import AlertChannel
 from .arena import Arena
+from .engine import (
+    allowlist_add_tgid,
+    engine_health_json,
+    engine_init,
+    load_rules_file,
+    start_pipeline,
+    stop_pipeline,
+)
 from .types import (
     MaceError,
     ErrorCode,
@@ -18,4 +26,10 @@ __all__ = [
     "ErrorCode",
     "RawMemoryEvent",
     "raw_memory_event",
+    "engine_init",
+    "load_rules_file",
+    "start_pipeline",
+    "stop_pipeline",
+    "allowlist_add_tgid",
+    "engine_health_json",
 ]

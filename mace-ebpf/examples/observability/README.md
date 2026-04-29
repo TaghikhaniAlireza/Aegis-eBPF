@@ -37,6 +37,10 @@ With `--features otel`, initialize via `observability::otel::OtelExporter::start
 
 - `mace_events_ingested_total` — arena pushes + pipeline raw ingests
 - `mace_events_dropped_total` — arena full
+- `mace_events_dropped_ringbuf_full_total` — kernel ring buffer output failures (BPF `KERNEL_STATS[0]`, scraped ~1s)
+- `mace_events_filtered_by_kernel_lru_total` — pending syscall/payload map insert failures (BPF `KERNEL_STATS[1]`)
+- `mace_events_dropped_reorder_timeout_total` — events flushed from the reorder heap when the reorder window deadline fires
+- `mace_events_dropped_channel_enriched_total` / `mace_events_dropped_channel_ordered_total` — userspace channel backpressure (enriched→reorder, reorder→partition)
 - `mace_alerts_fired_total{rule_id}` — FFI alert channel enqueue
 - `mace_pipeline_latency_ns` — partition worker evaluation latency
 - `mace_reorder_buffer_size` — reorder heap depth

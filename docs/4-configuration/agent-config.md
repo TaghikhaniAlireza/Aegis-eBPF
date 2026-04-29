@@ -1,6 +1,6 @@
 # Agent configuration (`config.yaml` and rules)
 
-The standalone **`mace-agent`** (`clients/go/cmd/mace-agent`) reads a single YAML file passed with **`--config`** / **`-c`**. Parsing and validation are implemented in **`clients/go/internal/agentconfig/config.go`**.
+The standalone **`mace-agent`** (`clients/go/cmd/mace-agent`) reads a single YAML file passed with **`mace-agent run --config`** / **`--config`** (root command without subcommand also accepts **`--config`** for backward compatibility). Parsing and validation are implemented in **`clients/go/internal/agentconfig/config.go`**.
 
 ## Agent `config.yaml` schema
 
@@ -15,11 +15,24 @@ Top-level keys:
 
 The agent uses **logrus** with **`JSONFormatter`** or **`TextFormatter`** writing **only** security events to this file. Lifecycle messages (for example shutdown) go to **stderr**.
 
+### `audit` (optional, Phase 4.1)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| **`path`** | string | Absolute path for an **append-only JSON audit log** of engine FFI actions (`load_rules`, `start_pipeline`, hot-reload, `set_log_level`, etc.). The agent sets **`MACE_AUDIT_LOG_PATH`** before **`mace.InitEngine()`** so Rust can append lines. |
+
 ### `rules` (required)
 
 | Field | Type | Description |
 |-------|------|-------------|
 | **`path`** | string | Passed to **`mace.LoadRulesFile`** in the Go SDK — may be a **file** or a **directory** of `.yaml`/`.yml` (same semantics as the Rust rule loader: non-recursive directory merge in sorted path order). |
+
+### CLI
+
+| Command | Purpose |
+|---------|---------|
+| **`mace-agent run --config /path/config.yaml`** | Run the agent (default when **`--config`** is passed without a subcommand). |
+| **`mace-agent status --config /path/config.yaml`** | Print **`mace_engine_health_json`** (pipeline state, rule count estimate, kernel counters) to stdout. Does **not** start the sensor; loads rules for accurate **`rule_count`**. |
 
 ### Example (matches `packaging/config.yaml`)
 
@@ -27,6 +40,9 @@ The agent uses **logrus** with **`JSONFormatter`** or **`TextFormatter`** writin
 logging:
   path: /var/log/mace/events.log
   format: json
+
+audit:
+  path: /var/log/mace/audit.log
 
 rules:
   path: /etc/mace/rules.yaml
@@ -50,7 +66,7 @@ The **`.deb`** installs:
 
 ## Environment variables (optional)
 
-The **agent** itself does not read `MACE_RULES_FILE` (that is specific to **`clients/go/examples`**). For Rust **core diagnostics** on stderr, see [Core logging](./logging.md) (`MACE_LOG_LEVEL`, `mace_set_log_level`).
+The **agent** itself does not read `MACE_RULES_FILE` (that is specific to **`clients/go/examples`**). For Rust **core diagnostics** on stderr, see [Core logging](./logging.md) (`MACE_LOG_LEVEL`, `mace_set_log_level`). **`audit.path`** in config sets **`MACE_AUDIT_LOG_PATH`** for append-only audit lines from the Rust FFI layer.
 
 ## Related
 
