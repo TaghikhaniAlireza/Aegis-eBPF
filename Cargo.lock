@@ -1622,6 +1622,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "parking_lot",
  "prost 0.13.5",
  "prost-build",
  "prost-types",

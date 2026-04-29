@@ -4,7 +4,7 @@ use std::{
     ffi::{CStr, c_char},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
@@ -14,6 +14,7 @@ use aya::{
     Ebpf,
     maps::{Array, HashMap},
 };
+use parking_lot::Mutex;
 use serde::Serialize;
 use tokio::sync::oneshot;
 
@@ -30,11 +31,11 @@ static ENGINE_RUNNING: AtomicBool = AtomicBool::new(false);
 static ENGINE_PARTITION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn engine_rule_path() -> Option<PathBuf> {
-    ENGINE_RULES_PATH.lock().ok().and_then(|g| g.clone())
+    ENGINE_RULES_PATH.lock().clone()
 }
 
 pub(crate) fn engine_rule_inline_yaml() -> Option<String> {
-    ENGINE_YAML.lock().ok().and_then(|g| g.clone())
+    ENGINE_YAML.lock().clone()
 }
 
 pub(crate) fn engine_pipeline_running() -> bool {
@@ -46,28 +47,22 @@ pub(crate) fn engine_partition_count() -> usize {
 }
 
 fn take_engine_thread() -> Option<JoinHandle<()>> {
-    ENGINE_THREAD.lock().ok()?.take()
+    ENGINE_THREAD.lock().take()
 }
 
 fn set_engine_thread(j: JoinHandle<()>) {
-    if let Ok(mut g) = ENGINE_THREAD.lock() {
-        *g = Some(j);
-    }
+    *ENGINE_THREAD.lock() = Some(j);
 }
 
 fn stop_engine_inner() {
-    if let Ok(mut g) = SHUTDOWN_TX.lock() {
-        if let Some(tx) = g.take() {
-            let _ = tx.send(());
-        }
+    if let Some(tx) = SHUTDOWN_TX.lock().take() {
+        let _ = tx.send(());
     }
     if let Some(j) = take_engine_thread() {
         let _ = j.join();
     }
     ENGINE_RUNNING.store(false, Ordering::Release);
-    if let Ok(mut g) = ENGINE_EBPF.lock() {
-        *g = None;
-    }
+    *ENGINE_EBPF.lock() = None;
 }
 
 fn audit_detail_path(p: &Path) -> String {
@@ -85,12 +80,8 @@ pub extern "C" fn mace_engine_init() -> i32 {
     crate::init_logging_for_ffi();
     audit::init_from_env();
     stop_engine_inner();
-    if let Ok(mut g) = ENGINE_YAML.lock() {
-        *g = None;
-    }
-    if let Ok(mut g) = ENGINE_RULES_PATH.lock() {
-        *g = None;
-    }
+    *ENGINE_YAML.lock() = None;
+    *ENGINE_RULES_PATH.lock() = None;
     crate::engine_stage::clear_staged_rule_count();
     audit::record(
         "engine_init",
@@ -126,12 +117,8 @@ pub unsafe extern "C" fn mace_load_rules(yaml: *const c_char) -> i32 {
         }
     };
     crate::engine_stage::record_staged_rule_count(set.rules.len());
-    if let Ok(mut g) = ENGINE_RULES_PATH.lock() {
-        *g = None;
-    }
-    if let Ok(mut g) = ENGINE_YAML.lock() {
-        *g = Some(s.clone());
-    }
+    *ENGINE_RULES_PATH.lock() = None;
+    *ENGINE_YAML.lock() = Some(s.clone());
     audit::record("load_rules", &audit_detail_yaml_preview(&s), true);
     super::handle::MaceErrorCode::Success as i32
 }
@@ -169,12 +156,8 @@ pub unsafe extern "C" fn mace_load_rules_file(path_utf8: *const c_char) -> i32 {
         }
     };
     crate::engine_stage::record_staged_rule_count(set.rules.len());
-    if let Ok(mut g) = ENGINE_YAML.lock() {
-        *g = None;
-    }
-    if let Ok(mut g) = ENGINE_RULES_PATH.lock() {
-        *g = Some(p.clone());
-    }
+    *ENGINE_YAML.lock() = None;
+    *ENGINE_RULES_PATH.lock() = Some(p.clone());
     audit::record("load_rules_file", &audit_detail_path(&p), true);
     super::handle::MaceErrorCode::Success as i32
 }
@@ -183,7 +166,7 @@ pub unsafe extern "C" fn mace_load_rules_file(path_utf8: *const c_char) -> i32 {
 /// Requires a running pipeline. Audit-logged.
 #[unsafe(no_mangle)]
 pub extern "C" fn mace_allowlist_add_tgid(tgid: u32) -> i32 {
-    let arc = match ENGINE_EBPF.lock().ok().and_then(|g| g.clone()) {
+    let arc = match ENGINE_EBPF.lock().clone() {
         Some(a) => a,
         None => {
             audit::record(
@@ -194,10 +177,7 @@ pub extern "C" fn mace_allowlist_add_tgid(tgid: u32) -> i32 {
             return super::handle::MaceErrorCode::InitFailed as i32;
         }
     };
-    let mut ebpf = match arc.lock() {
-        Ok(g) => g,
-        Err(_) => return super::handle::MaceErrorCode::InitFailed as i32,
-    };
+    let mut ebpf = arc.lock();
     let map_fd = match ebpf.map_mut("ALLOWLIST") {
         Some(m) => m,
         None => {
@@ -239,12 +219,12 @@ pub extern "C" fn mace_allowlist_add_tgid(tgid: u32) -> i32 {
 /// Requires prior `mace_load_rules` **or** `mace_load_rules_file`. Uses `mace_register_event_callback` when set (`start_pipeline` wires it).
 #[unsafe(no_mangle)]
 pub extern "C" fn mace_start_pipeline() -> i32 {
-    if ENGINE_THREAD.lock().ok().is_some_and(|g| g.is_some()) {
+    if ENGINE_THREAD.lock().is_some() {
         audit::record("start_pipeline", "already running", false);
         return super::handle::MaceErrorCode::InitFailed as i32;
     }
-    let rules_path = ENGINE_RULES_PATH.lock().ok().and_then(|g| g.clone());
-    let inline_yaml = ENGINE_YAML.lock().ok().and_then(|g| g.clone());
+    let rules_path = ENGINE_RULES_PATH.lock().clone();
+    let inline_yaml = ENGINE_YAML.lock().clone();
 
     let pipeline_rules = match (&rules_path, &inline_yaml) {
         (Some(path), None) => PipelineConfig {
@@ -269,9 +249,7 @@ pub extern "C" fn mace_start_pipeline() -> i32 {
     let part = pipeline_rules.partition_count;
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    if let Ok(mut g) = SHUTDOWN_TX.lock() {
-        *g = Some(shutdown_tx);
-    }
+    *SHUTDOWN_TX.lock() = Some(shutdown_tx);
 
     let join =
         std::thread::spawn(move || {
@@ -307,9 +285,7 @@ pub extern "C" fn mace_start_pipeline() -> i32 {
                 }
             };
 
-            if let Ok(mut g) = ENGINE_EBPF.lock() {
-                *g = Some(Arc::clone(&ebpf));
-            }
+            *ENGINE_EBPF.lock() = Some(Arc::clone(&ebpf));
             ENGINE_PARTITION_COUNT.store(part, Ordering::Release);
             ENGINE_RUNNING.store(true, Ordering::Release);
             audit::record("start_pipeline", "sensor and pipeline started", true);
@@ -321,9 +297,7 @@ pub extern "C" fn mace_start_pipeline() -> i32 {
             let _ = shutdown_rx.await;
             handle.shutdown().await;
             ENGINE_RUNNING.store(false, Ordering::Release);
-            if let Ok(mut g) = ENGINE_EBPF.lock() {
-                *g = None;
-            }
+            *ENGINE_EBPF.lock() = None;
             audit::record("stop_pipeline", "shutdown complete (from engine thread)", true);
         });
         });
@@ -442,15 +416,9 @@ pub unsafe extern "C" fn mace_engine_health_json(out: *mut c_char, out_len: usiz
     if out.is_null() || out_len == 0 {
         return super::handle::MaceErrorCode::NullPointer as i32;
     }
-    let stats = match ENGINE_EBPF.lock() {
-        Ok(guard) => match guard.as_ref() {
-            Some(arc) => match arc.lock() {
-                Ok(mut e) => read_kernel_stats(&mut e),
-                Err(_) => [0; 4],
-            },
-            None => [0; 4],
-        },
-        Err(_) => [0; 4],
+    let stats = match ENGINE_EBPF.lock().as_ref() {
+        Some(arc) => read_kernel_stats(&mut arc.lock()),
+        None => [0; 4],
     };
 
     let (rule_count, staged_rule_count) = rule_count_for_health();

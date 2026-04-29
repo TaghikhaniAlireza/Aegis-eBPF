@@ -11,6 +11,7 @@ This page summarizes how **GitHub Actions** validates the repository and how **r
 | Job / area | What it does |
 |------------|----------------|
 | **lint-and-audit** | `cargo fmt` (nightly), `clippy`, `cargo audit`; installs **clang/llvm/libelf**, **bpf-linker**, kernel headers so `mace-ebpf/build.rs` can run under clippy. |
+| **rust-coverage-report** | **`cargo llvm-cov`** on the workspace (**excluding** `mace-ebpf-ebpf`); prints **summary-only** in CI logs (**no merge gate** on percentage yet). |
 | **build-and-test** | Matrix of **Ubuntu** versions with **`fail-fast: false`** so one row does not cancel the other; `cargo build`, Criterion gate, `cargo test` (workspace), optional **`--include-ignored`** BPF tests. |
 | **ffi-bindings-test** | Builds **`mace-ebpf`** (debug), runs **Go** tests under `mace-ebpf/pkg/mace` and **Python** tests under `mace-ebpf/python` with **`CGO_ENABLED=1`**. |
 

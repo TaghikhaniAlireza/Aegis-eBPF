@@ -88,6 +88,9 @@ pub struct StandardizedEvent {
     /// Threat-intel metadata for rules in `shadow_matched_rules`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shadow_rule_metadata: Vec<RuleMatchMetadata>,
+    /// True when in-kernel execve argv capture hit size limits (v11); prefer this over inferring from cmdline length.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub execve_argv_truncated: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -119,6 +122,9 @@ fn format_syscall_arguments(ev: &mace_ebpf_common::MemoryEvent) -> Vec<String> {
             ];
             if !ev.execve_cmdline.is_empty() {
                 v.push(format!("argv_snapshot={}", ev.execve_cmdline));
+            }
+            if ev.execve_argv_truncated {
+                v.push("execve_argv_truncated=true".to_string());
             }
             v
         }
@@ -159,6 +165,9 @@ pub fn build_standardized_event(
     };
     let username = ev.username.clone().unwrap_or_default();
 
+    let execve_argv_truncated =
+        ev.inner.event_type == EventType::Execve && ev.inner.execve_argv_truncated;
+
     StandardizedEvent {
         timestamp: ev.inner.timestamp_ns,
         pid: ev.inner.pid,
@@ -174,6 +183,7 @@ pub fn build_standardized_event(
         shadow: false,
         matched_rule_metadata: Vec::new(),
         shadow_rule_metadata: Vec::new(),
+        execve_argv_truncated,
     }
 }
 
@@ -287,6 +297,7 @@ mod tests {
             execve_cmdline: String::new(),
             openat_path: String::new(),
             memfd_name: String::new(),
+            execve_argv_truncated: false,
         }
     }
 

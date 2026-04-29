@@ -40,6 +40,16 @@ This document describes how the **Mace-eBPF** components fit together: kernel pr
 - Uses **maps**: ring buffer for outbound events, LRU-style maps for pending syscall state, optional allowlists.
 - **Verifier constraints** drive design choices: `execve` packs **up to 16** argv strings at `sys_enter_execve` into a **bounded** ring payload (v11: header + 400-byte NUL-separated blob, with `is_truncated` when capped). Per-arg reads use a **PerCpuArray** scratch so the BPF stack stays under verifier limits; arguments beyond the buffer are not captured (no chunking in v1).
 
+## Where filtering and policy run
+
+| Concern | Kernel (eBPF) | Userspace (Rust pipeline) |
+|--------|----------------|----------------------------|
+| **Goal** | Cut volume early; verifier-safe checks | Full detection logic, YAML, suppressions, shadow mode |
+| **Examples** | TGID **allowlist**, **mmap rate limit**, bounded **execve argv** / **openat path** capture | **RuleSet** evaluation, **regex**, **sequence** / **frequency** rules, **`/proc`** fallbacks when kernel snapshot is empty or truncated |
+| **Why split** | Ring buffer and CPU are finite; BPF has stack/insn limits | Rules change often and need rich context (K8s, passwd, cmdline tracker) |
+
+Neither layer alone is “best”: **kernel** reduces cost and closes some TOCTOU windows (syscall-time snapshots); **userspace** carries policy you cannot safely express entirely in BPF.
+
 ## Userspace core: `mace-ebpf`
 
 Key modules (under **`mace-ebpf/src/`**):
@@ -54,6 +64,21 @@ Key modules (under **`mace-ebpf/src/`**):
 | **`logging.rs`** | **`[Mace][LEVEL]`** diagnostic lines on stderr (filter floor via `MACE_LOG_LEVEL` / `mace_set_log_level`). |
 
 The BPF object bytes are compiled into the Rust crate output directory and included at link time (`include_bytes_aligned!`).
+
+### TOCTOU (time-of-check vs time-of-use)
+
+- **`execve` argv (v11):** Arguments are read in eBPF at **`sys_enter_execve`**, so the primary cmdline snapshot is **not** a post-syscall `/proc/<pid>/cmdline` read. If the snapshot is **truncated** (`ExecveWireHeader.is_truncated` → `MemoryEvent.execve_argv_truncated` and JSON `execve_argv_truncated`), operators may still use the haystack fallbacks documented in the rules guide—those paths can diverge from the true full argv under adversarial conditions.
+- **Other `/proc` reads** (e.g. some rule matchers): Still best-effort at evaluation time; document and scope detections accordingly.
+
+### Kubernetes enrichment and slow API
+
+When built with **`--features kubernetes`**, `KubernetesEnricher` uses a **Moka** cache (TTL **60 s**) so repeated cgroup lookups avoid the API. On a cache miss, pod listing uses a **timeout** (default **12 s**); on timeout or error, enrichment is skipped for that event (metadata `None`) rather than blocking the pipeline indefinitely. The list call also uses a **server-side limit** on Pod count per request (see `mace-ebpf/src/enrichment/kubernetes.rs`). For large clusters, replace list-all with **watch/informer** or **field-scoped** APIs in a future change.
+
+### Locking and latency
+
+The live **`Ebpf`** handle is wrapped in **`parking_lot::Mutex`** (shared between the sensor task, periodic kernel-stats refresh, and FFI helpers such as allowlist updates). Contention is usually low but **concurrent FFI + heavy map access** can serialize briefly.
+
+The rule engine and pipeline use **async channels** and partitioned workers to avoid a single global lock on every event.
 
 ## FFI boundary
 

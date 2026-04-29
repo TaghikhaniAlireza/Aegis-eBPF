@@ -64,6 +64,8 @@ type MaceEvent struct {
 	MatchedRuleMetadata []RuleMatchMetadata `json:"matched_rule_metadata,omitempty"`
 	// ShadowRuleMetadata is threat-intel metadata for each shadow-mode rule in ShadowMatchedRules.
 	ShadowRuleMetadata []RuleMatchMetadata `json:"shadow_rule_metadata,omitempty"`
+	// ExecveArgvTruncated is true when the in-kernel execve argv snapshot hit buffer limits (ring v11).
+	ExecveArgvTruncated bool `json:"execve_argv_truncated,omitempty"`
 }
 
 // Client receives structured JSON events from the Rust core on a buffered channel (single active client per process).

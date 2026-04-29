@@ -5,9 +5,11 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, Mutex, Once},
+    sync::{Arc, Once},
     time::Duration,
 };
+
+use parking_lot::Mutex;
 
 pub mod alert;
 pub mod audit;
@@ -130,7 +132,7 @@ pub async fn start_sensor(
     let ebpf = Arc::new(Mutex::new(ebpf));
 
     let ring_buf = {
-        let mut g = ebpf.lock().expect("ebpf mutex poisoned");
+        let mut g = ebpf.lock();
         RingBuf::try_from(g.take_map("EVENTS").context("eBPF map EVENTS not found")?)?
     };
     let mut ring_buf =
@@ -141,9 +143,8 @@ pub async fn start_sensor(
         let _keep_alive = ebpf_stats;
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            if let Ok(mut g) = _keep_alive.lock() {
-                kernel_health::refresh_kernel_stats_from_ebpf(&mut g);
-            }
+            let mut g = _keep_alive.lock();
+            kernel_health::refresh_kernel_stats_from_ebpf(&mut g);
         }
     });
 

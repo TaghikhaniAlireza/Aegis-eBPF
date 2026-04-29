@@ -199,6 +199,7 @@ mod tests {
                 execve_cmdline: String::new(),
                 openat_path: String::new(),
                 memfd_name: String::new(),
+                execve_argv_truncated: false,
             },
             metadata: None,
             cmdline_context: None,
@@ -448,6 +449,7 @@ mod tests {
                     execve_cmdline: String::new(),
                     openat_path: String::new(),
                     memfd_name: String::new(),
+                    execve_argv_truncated: false,
                 })
                 .await
                 .expect("send should succeed");

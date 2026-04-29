@@ -108,7 +108,7 @@ A **C ABI (`cdylib` / `staticlib`)** allows embedding the engine in **Go** (`cgo
 
 ### 2.7 Notable absent or “BYO” items
 
-- **Formal code coverage gates** (e.g. `tarpaulin` / `llvm-cov` thresholds) are **not** enforced in CI today—see audit notes in `docs/6-references/audits/PHASE_1_TO_4_AUDIT_REPORT.md`.
+- **Formal code coverage percentage gates** (fail PR under X%) are **not** enforced; CI runs **`cargo llvm-cov`** (**summary-only**, workspace excluding `mace-ebpf-ebpf`) for visibility in logs. Adding thresholds remains optional—see audit notes in `docs/6-references/audits/PHASE_1_TO_4_AUDIT_REPORT.md`.
 
 ---
 
@@ -169,7 +169,7 @@ Validation runs at load time (`validate_rule`, `validate_conditions_structured`,
 
 | Workflow | Role |
 |----------|------|
-| **`ci.yml`** | **lint-and-audit** (nightly `fmt`, clippy, `cargo audit`), **ffi-bindings-test** (Rust debug lib + Go tests with **`-race`** for `mace-ebpf/pkg/mace` and `clients/go` + Python pytest), **build-and-test** matrix on **ubuntu-22.04** / **ubuntu-24.04** (workspace build, prometheus integration test, **Criterion gate**, `cargo test --workspace -- --include-ignored` with sudo for BPF tests). |
+| **`ci.yml`** | **lint-and-audit**, **`rust-coverage-report`** (`cargo llvm-cov` summary, no % gate), **ffi-bindings-test** (Rust debug lib + Go **`-race`** on `mace-ebpf/pkg/mace` and `clients/go` + Python pytest), **build-and-test** matrix on **ubuntu-22.04** / **ubuntu-24.04** (workspace build, prometheus integration test, **Criterion gate**, `cargo test --workspace -- --include-ignored` with sudo for BPF tests). |
 | **`core-compat.yml`** | Mandatory **eBPF smoke** on **ubuntu-22.04**, **ubuntu-24.04**, **ubuntu-latest**: release build, `verifier_load_test` + `tracepoint_attach_test` with `sudo` and `--ignored`; logs `uname -a` per job. |
 | **`ffi-assurance.yml`** | **`run_memory_checks.sh`**: Miri on selected modules + ASAN lib tests. |
 | **`release.yml`** | On tag **`v*`**: release build, static **`mace-agent`**, nFPM `.deb`, tarball with `libmace_ebpf.so` / `.a` / `mace.h`, GitHub Release upload. |
@@ -194,6 +194,7 @@ Validation runs at load time (`validate_rule`, `validate_conditions_structured`,
 ### 5.5 Testing coverage (conceptual)
 
 - **Unit / integration:** extensive `#[cfg(test)]` across rules, pipeline, FFI, state, proto, observability.
+- **CI coverage visibility:** `rust-coverage-report` job runs **`cargo llvm-cov test --workspace --exclude mace-ebpf-ebpf --summary-only`** (lines printed in Actions logs; **not** a merge gate).
 - **Kernel tests:** ignored by default except when CI passes `--include-ignored` / dedicated workflows; **Cursor Cloud / Firecracker** environments may lack full BPF tracepoint support—treat failures there as **environment** issues, not necessarily code defects.
 - **VM matrix (`scripts/vm/`):** optional deeper kernel coverage for operators.
 
@@ -203,11 +204,11 @@ Validation runs at load time (`validate_rule`, `validate_conditions_structured`,
 
 Prioritized themes (short):
 
-1. **Coverage and evidence:** Add an automated **coverage report** (and optional threshold) for `mace-ebpf` core modules; today coverage % is not a merge gate.
+1. **Coverage thresholds:** CI already prints **`llvm-cov`** summaries; add an **optional fail-under-X%** gate for `mace-ebpf` / `mace-ebpf-common` once a baseline is agreed.
 2. **FFI semantics documentation:** Clearly distinguish **“safe copy-in/copy-out”** from **zero-copy** in public docs if external stakeholders still use Phase-4 zero-copy language.
 3. **Execve argv limits:** eBPF captures a **bounded** argv snapshot at `sys_enter_execve` (v11 wire: header + 400-byte NUL-separated args, max 16 args × 128 bytes read per arg). **`is_truncated`** indicates overflow; there is **no** second-chunk protocol—operators rely on haystack fallbacks (`cmdline_context`, `/proc`) only when the snapshot is incomplete.
 4. **Criterion variance:** Concurrent bench groups (e.g. SPSC throughput) can show high variance on shared CI runners; gates intentionally focus on **stable single-thread medians**; revisit if stricter SPSC regression detection is required.
-5. **Kubernetes operational hardening:** RBAC, timeout behavior, and cache staleness policies for `KubernetesEnricher` in large clusters.
+5. **Kubernetes operational hardening:** For very large clusters, replace **list-all-pods** scanning with **watch/informer** or field-scoped APIs (timeouts and list limits are already in `KubernetesEnricher`).
 6. **Matrix ownership:** Keep **`ubuntu-latest`** kernel drift in mind for `core-compat`; document how often baselines should be refreshed.
 7. **Debt register:** Continue to use `docs/6-references/audits/PHASE_1_TO_4_AUDIT_REPORT.md` for **line-by-line** blueprint gap tracking; keep **this file** updated when major subsystems change.
 

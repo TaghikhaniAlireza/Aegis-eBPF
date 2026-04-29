@@ -996,6 +996,7 @@ mod tests {
                 execve_cmdline: String::new(),
                 openat_path: String::new(),
                 memfd_name: String::new(),
+                execve_argv_truncated: false,
             },
             metadata: None,
             cmdline_context: None,
@@ -1496,6 +1497,7 @@ rules:
                 execve_cmdline: String::new(),
                 openat_path: String::new(),
                 memfd_name: String::new(),
+                execve_argv_truncated: false,
             })
             .await
             .expect("send should succeed");
@@ -1548,6 +1550,7 @@ rules:
                 execve_cmdline: String::new(),
                 openat_path: String::new(),
                 memfd_name: String::new(),
+                execve_argv_truncated: false,
             },
             metadata: None,
             cmdline_context: None,
@@ -1637,6 +1640,7 @@ rules:
                 execve_cmdline: "/bin/sleep 60".into(),
                 openat_path: String::new(),
                 memfd_name: String::new(),
+                execve_argv_truncated: false,
             },
             metadata: None,
             cmdline_context: None,

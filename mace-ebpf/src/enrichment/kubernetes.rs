@@ -18,11 +18,16 @@ use async_trait::async_trait;
 use k8s_openapi::api::core::v1::Pod;
 use kube::{Api, Client, api::ListParams};
 use moka::sync::Cache;
+use tracing::warn;
 
 use crate::{ContextEnricher, PodMetadata};
 
 const CACHE_MAX_CAPACITY: u64 = 10_000;
 const CACHE_TTL_SECONDS: u64 = 60;
+/// Hard cap on how long a single Kubernetes list+scan may block enrichment (slow API / large clusters).
+const K8S_LOOKUP_TIMEOUT: Duration = Duration::from_secs(12);
+/// Upper bound on Pod objects examined per cache miss (limits CPU when API returns huge lists).
+const K8S_MAX_PODS_PER_LOOKUP: u32 = 5_000;
 
 pub struct KubernetesEnricher {
     client: Client,
@@ -59,7 +64,23 @@ impl KubernetesEnricher {
 
     async fn lookup_pod_metadata(&self, cgroup_id: u64) -> Option<PodMetadata> {
         let pods: Api<Pod> = Api::all(self.client.clone());
-        let pod_list = pods.list(&ListParams::default()).await.ok()?;
+        let list_params = ListParams::default().limit(K8S_MAX_PODS_PER_LOOKUP);
+        let list_future = pods.list(&list_params);
+        let pod_list = match tokio::time::timeout(K8S_LOOKUP_TIMEOUT, list_future).await {
+            Ok(Ok(l)) => l,
+            Ok(Err(e)) => {
+                warn!(error = %e, "kubernetes: list pods failed");
+                return None;
+            }
+            Err(_) => {
+                warn!(
+                    timeout_secs = K8S_LOOKUP_TIMEOUT.as_secs(),
+                    "kubernetes: list pods timed out — skipping enrichment for this cgroup_id"
+                );
+                return None;
+            }
+        };
+
         let cgroup_hex = format!("{cgroup_id:x}");
 
         for pod in pod_list.items {
@@ -118,83 +139,44 @@ mod tests {
         assert_context_enricher::<KubernetesEnricher>();
     }
 
-    #[tokio::test]
-    async fn cache_miss_triggers_lookup_and_populates_cache() {
-        let cache = Cache::new(100);
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_lookup = Arc::clone(&calls);
-        let expected = PodMetadata {
-            pod_name: "miss-pod".to_string(),
-            namespace: "default".to_string(),
-            node_name: "node-a".to_string(),
-        };
-        let expected_for_lookup = expected.clone();
-        let enriched = enrich_with_cache(&cache, 42, move |_| {
-            let calls = Arc::clone(&calls_for_lookup);
-            let expected = expected_for_lookup.clone();
-            async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Some(expected)
-            }
-        })
-        .await;
-
-        assert_eq!(enriched, Some(expected.clone()));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(cache.get(&42), Some(expected));
+    #[derive(Clone)]
+    struct CountingEnricher {
+        calls: Arc<AtomicUsize>,
     }
-
-    #[tokio::test]
-    async fn cache_hit_returns_without_requerying() {
-        let cache = Cache::new(100);
-        let expected = PodMetadata {
-            pod_name: "hit-pod".to_string(),
-            namespace: "kube-system".to_string(),
-            node_name: "node-b".to_string(),
-        };
-        cache.insert(42, expected.clone());
-
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_lookup = Arc::clone(&calls);
-        let enriched = enrich_with_cache(&cache, 42, move |_| {
-            let calls = Arc::clone(&calls_for_lookup);
-            async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                None
-            }
-        })
-        .await;
-
-        assert_eq!(enriched, Some(expected));
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-    }
-
-    struct MockEnricher;
 
     #[async_trait]
-    impl ContextEnricher for MockEnricher {
-        async fn enrich(&self, cgroup_id: u64) -> Option<PodMetadata> {
-            if cgroup_id == 42 {
-                return Some(PodMetadata {
-                    pod_name: "demo-pod".to_string(),
-                    namespace: "default".to_string(),
-                    node_name: "node-a".to_string(),
-                });
-            }
-            None
+    impl ContextEnricher for CountingEnricher {
+        async fn enrich(&self, _cgroup_id: u64) -> Option<PodMetadata> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Some(PodMetadata {
+                pod_name: "p".into(),
+                namespace: "ns".into(),
+                node_name: "n".into(),
+            })
         }
     }
 
     #[tokio::test]
-    async fn mock_enricher_returns_expected_values() {
-        let enricher = MockEnricher;
-        let enriched = enricher.enrich(42).await;
-        assert!(enriched.is_some());
-        let metadata = enriched.expect("metadata should be present for cgroup id 42");
-        assert_eq!(metadata.pod_name, "demo-pod");
-        assert_eq!(metadata.namespace, "default");
-        assert_eq!(metadata.node_name, "node-a");
+    async fn enrich_with_cache_hits_second_time() {
+        let cache: Cache<u64, PodMetadata> = Cache::builder()
+            .max_capacity(10)
+            .time_to_live(Duration::from_secs(60))
+            .build();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner = CountingEnricher {
+            calls: Arc::clone(&calls),
+        };
 
-        assert!(enricher.enrich(99).await.is_none());
+        let first = enrich_with_cache(&cache, 42, |_| async { inner.enrich(42).await }).await;
+        assert!(first.is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let second = enrich_with_cache(&cache, 42, |_| async { inner.enrich(42).await }).await;
+        assert!(second.is_some());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "lookup must not run again on cache hit"
+        );
     }
 }

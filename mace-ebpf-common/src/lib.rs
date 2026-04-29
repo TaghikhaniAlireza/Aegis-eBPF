@@ -213,6 +213,9 @@ pub struct MemoryEvent {
     /// `memfd_create` name snapshot from eBPF scratch (same payload layout as execve argv[0] slot).
     #[serde(default)]
     pub memfd_name: alloc::string::String,
+    /// True when ring layout v11 execve argv capture hit buffer or read limits (`ExecveWireHeader::is_truncated`).
+    #[serde(default)]
+    pub execve_argv_truncated: bool,
 }
 
 #[cfg(feature = "user")]
@@ -242,6 +245,8 @@ impl MemoryEvent {
 
         let event_type = EventType::from_syscall(raw.syscall)?;
 
+        let mut execve_argv_truncated = false;
+
         let (addr, len, flags, ret) = match event_type {
             EventType::Mmap => (raw.args[0], raw.args[1], raw.args[3], syscall_ret),
             EventType::MprotectWX => (raw.args[0], raw.args[1], raw.args[2], syscall_ret),
@@ -256,6 +261,13 @@ impl MemoryEvent {
 
         let execve_cmdline = if event_type == EventType::Execve {
             if layout_version >= 11 {
+                if let Some(b) = payload_blob.as_ref()
+                    && b.len() >= EXECVE_WIRE_HEADER_LEN
+                {
+                    let hdr =
+                        unsafe { core::ptr::read_unaligned(b.as_ptr().cast::<ExecveWireHeader>()) };
+                    execve_argv_truncated = hdr.is_truncated != 0;
+                }
                 payload_blob
                     .as_ref()
                     .map(|b| parse_execve_argv_joined_from_payload(b.as_slice()))
@@ -307,6 +319,7 @@ impl MemoryEvent {
             execve_cmdline,
             openat_path,
             memfd_name,
+            execve_argv_truncated,
         })
     }
 }
@@ -676,6 +689,7 @@ mod tests {
             assert_eq!(ev.event_type, EventType::Execve);
             assert_eq!(ev.uid, 0);
             assert_eq!(ev.execve_cmdline, "/bin/sh -c whoami");
+            assert!(!ev.execve_argv_truncated);
         }
 
         /// v11: long single argv with tail marker (truncation flag set).
@@ -726,6 +740,7 @@ mod tests {
             let ev = MemoryEvent::from_bytes(&bytes).expect("ring sample v11");
             assert!(ev.execve_cmdline.ends_with("Z_END_MARK_9"));
             assert_eq!(ev.execve_cmdline.len(), arg_len);
+            assert!(ev.execve_argv_truncated);
         }
 
         /// Validates parsing of an all-zero raw kernel event for syscall id 1 (mmap with zero fields).

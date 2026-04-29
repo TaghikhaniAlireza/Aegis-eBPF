@@ -3,7 +3,7 @@ use std::{
     collections::BinaryHeap,
     error::Error,
     fmt,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -13,6 +13,7 @@ use log::warn;
 use mace_ebpf_common::MemoryEvent;
 #[cfg(feature = "otel")]
 use opentelemetry::trace::Span;
+use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 
 #[cfg(feature = "otel")]
@@ -82,7 +83,7 @@ pub struct PipelineHandle {
     #[allow(dead_code)]
     rules: Option<PipelineRules>,
     /// Live eBPF object while the sensor runs (for health / map inspection). `None` in unit tests.
-    pub ebpf: Option<std::sync::Arc<std::sync::Mutex<aya::Ebpf>>>,
+    pub ebpf: Option<Arc<Mutex<Ebpf>>>,
 }
 
 #[derive(Debug)]
@@ -159,7 +160,7 @@ pub async fn start_pipeline(
         enricher,
         rules.current(),
         Some(rules),
-        Some(std::sync::Arc::clone(&ebpf)),
+        Some(Arc::clone(&ebpf)),
     );
     Ok((handle, ebpf))
 }
@@ -308,10 +309,7 @@ async fn send_enriched_event(
         }
     };
 
-    let cmdline_context = cmdline_tracker
-        .lock()
-        .expect("cmdline context mutex poisoned")
-        .observe(&event);
+    let cmdline_context = cmdline_tracker.lock().observe(&event);
     let username = crate::passwd::username_for_uid(event.uid);
 
     let enriched = EnrichedEvent {
@@ -655,6 +653,7 @@ mod tests {
             execve_cmdline: String::new(),
             openat_path: String::new(),
             memfd_name: String::new(),
+            execve_argv_truncated: false,
         }
     }
 
@@ -679,6 +678,7 @@ mod tests {
             execve_cmdline: String::new(),
             openat_path: String::new(),
             memfd_name: String::new(),
+            execve_argv_truncated: false,
         }
     }
 

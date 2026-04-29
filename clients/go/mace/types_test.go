@@ -112,6 +112,28 @@ func TestMaceEvent_rule_match_metadata(t *testing.T) {
 	}
 }
 
+func TestMaceEvent_execve_argv_truncated(t *testing.T) {
+	const payload = `{
+	  "timestamp": 1,
+	  "pid": 2,
+	  "uid": 0,
+	  "username": "",
+	  "process_name": "p",
+	  "syscall_name": "execve",
+	  "cmdline": "a b",
+	  "arguments": [],
+	  "matched_rules": [],
+	  "execve_argv_truncated": true
+	}`
+	var ev MaceEvent
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		t.Fatal(err)
+	}
+	if !ev.ExecveArgvTruncated {
+		t.Fatal("expected execve_argv_truncated true")
+	}
+}
+
 func TestMaceEvent_omitempty_suppressed_by(t *testing.T) {
 	ev := MaceEvent{
 		Timestamp:    1,

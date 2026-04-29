@@ -251,6 +251,7 @@ mod tests {
             execve_cmdline: String::new(),
             openat_path: String::new(),
             memfd_name: String::new(),
+            execve_argv_truncated: false,
         }
     }
 

@@ -16,6 +16,7 @@ The following fields are stable for integration and SIEM mapping:
 | Syscall | `syscall_name` | string | Logical name: `mmap`, `mprotect`, `execve`, `openat`, `ptrace`, `memfd_create`, … |
 | Command line | `cmdline` | string | Best-effort command line (execve snapshot and/or `/proc`). |
 | Arguments | `arguments` | array of strings | Syscall-specific formatted arguments (see Rust `format_syscall_arguments`). |
+| Execve argv truncated | `execve_argv_truncated` | boolean | When `true`, in-kernel **execve** argv capture hit buffer limits (ring v11); **omitted** when `false`. |
 | Matched rules | `matched_rules` | array of strings | Rule **`id`** values that matched (may be empty). |
 | Suppressions | `suppressed_by` | array of strings | Suppression **`id`** values when alerts were suppressed; **omitted** when empty. |
 
