@@ -5,6 +5,7 @@ members = [
     "mace-ebpf-common",
     "mace-ebpf-ebpf",
     "mace-ebpf-loader",
+    "mace-replay",
 ]
 default-members = ["mace-ebpf", "mace-ebpf-common"]
 

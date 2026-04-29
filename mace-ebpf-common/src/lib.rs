@@ -3,6 +3,9 @@
 #[cfg(feature = "user")]
 extern crate alloc;
 
+#[cfg(feature = "user")]
+use serde::{Deserialize, Serialize};
+
 pub const TASK_COMM_LEN: usize = 16;
 pub const SYSCALL_ARG_COUNT: usize = 6;
 
@@ -125,6 +128,7 @@ impl KernelMemoryEvent {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "user", derive(Serialize, Deserialize))]
 pub enum EventType {
     Mmap = 0,
     MprotectWX = 1,
@@ -152,7 +156,7 @@ impl EventType {
 pub type MemoryEvent = KernelMemoryEvent;
 
 #[cfg(feature = "user")]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MemoryEvent {
     pub timestamp_ns: u64,
     pub tgid: u32,

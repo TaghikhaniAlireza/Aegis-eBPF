@@ -43,6 +43,32 @@ func TestMaceEvent_JSONRoundTrip_suppressed_by(t *testing.T) {
 	}
 }
 
+func TestMaceEvent_shadow_fields(t *testing.T) {
+	const payload = `{
+	  "timestamp": 1,
+	  "pid": 2,
+	  "uid": 0,
+	  "username": "",
+	  "process_name": "p",
+	  "syscall_name": "mmap",
+	  "cmdline": "",
+	  "arguments": [],
+	  "matched_rules": [],
+	  "shadow_matched_rules": ["S1"],
+	  "shadow": true
+	}`
+	var ev MaceEvent
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(ev.ShadowMatchedRules) != 1 || ev.ShadowMatchedRules[0] != "S1" {
+		t.Fatalf("shadow_matched_rules: %+v", ev.ShadowMatchedRules)
+	}
+	if !ev.Shadow {
+		t.Fatal("expected shadow true")
+	}
+}
+
 func TestMaceEvent_omitempty_suppressed_by(t *testing.T) {
 	ev := MaceEvent{
 		Timestamp:    1,

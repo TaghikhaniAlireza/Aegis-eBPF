@@ -173,7 +173,7 @@ mod tests {
     use crate::{
         Alert, AlertCallback, EnrichedEvent, NoopEnricher, PipelineConfig,
         pipeline::start_pipeline_from_receiver_for_tests_with_rules,
-        rules::{Conditions, Rule, Severity, StatefulConditions, loader::RuleSet},
+        rules::{Conditions, EnforcementMode, Rule, Severity, StatefulConditions, loader::RuleSet},
     };
 
     fn fake_enriched_event(
@@ -291,6 +291,7 @@ mod tests {
                     min_mprotect_exec_count: Some(3),
                     min_rwx_bytes: None,
                 }),
+                enforcement_mode: EnforcementMode::Enforce,
                 cgroup_regex: None,
                 process_name_regex: None,
                 pathname_regex: None,
@@ -337,6 +338,7 @@ mod tests {
                     min_mprotect_exec_count: None,
                     min_rwx_bytes: None,
                 }),
+                enforcement_mode: EnforcementMode::Enforce,
                 cgroup_regex: None,
                 process_name_regex: None,
                 pathname_regex: None,
@@ -376,6 +378,7 @@ mod tests {
                     min_mprotect_exec_count: Some(3),
                     min_rwx_bytes: None,
                 }),
+                enforcement_mode: EnforcementMode::Enforce,
                 cgroup_regex: None,
                 process_name_regex: None,
                 pathname_regex: None,

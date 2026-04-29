@@ -5,7 +5,7 @@ use std::{error::Error, fmt, fs};
 
 use mace_ebpf_common::EventType;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     enrichment::normalization::{normalize_cmdline, normalize_unix_path},
@@ -45,6 +45,15 @@ pub struct SuppressionEntry {
     pub cmdline_context_regex: Option<Regex>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "PascalCase")]
+pub enum EnforcementMode {
+    #[default]
+    Enforce,
+    /// Dry-run: match for telemetry / false-positive study; does not drive alert callback or enforce-path JSON.
+    Shadow,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct Rule {
     pub id: String,
@@ -54,6 +63,8 @@ pub struct Rule {
     pub conditions: Conditions,
     #[serde(default)]
     pub stateful: Option<StatefulConditions>,
+    #[serde(default)]
+    pub enforcement_mode: EnforcementMode,
     /// Filled at load time from `conditions.cgroup_pattern` (never compile per event).
     #[serde(skip)]
     pub cgroup_regex: Option<Regex>,
@@ -852,6 +863,7 @@ rules:
                 ..Default::default()
             },
             stateful: None,
+            enforcement_mode: EnforcementMode::Enforce,
             cgroup_regex: None,
             process_name_regex: None,
             pathname_regex: None,
@@ -879,6 +891,7 @@ rules:
                 ..Default::default()
             },
             stateful: None,
+            enforcement_mode: EnforcementMode::Enforce,
             cgroup_regex: None,
             process_name_regex: None,
             pathname_regex: None,
@@ -910,6 +923,7 @@ rules:
                 ..Default::default()
             },
             stateful: None,
+            enforcement_mode: EnforcementMode::Enforce,
             cgroup_regex: None,
             process_name_regex: None,
             pathname_regex: None,
@@ -934,6 +948,7 @@ rules:
                 ..Default::default()
             },
             stateful: None,
+            enforcement_mode: EnforcementMode::Enforce,
             cgroup_regex: None,
             process_name_regex: None,
             pathname_regex: None,
@@ -963,6 +978,7 @@ rules:
                 ..Default::default()
             },
             stateful: None,
+            enforcement_mode: EnforcementMode::Enforce,
             cgroup_regex: None,
             process_name_regex: None,
             pathname_regex: None,
@@ -990,6 +1006,7 @@ rules:
                         ..Default::default()
                     },
                     stateful: None,
+                    enforcement_mode: EnforcementMode::Enforce,
                     cgroup_regex: None,
                     process_name_regex: None,
                     pathname_regex: None,
@@ -1006,6 +1023,7 @@ rules:
                         ..Default::default()
                     },
                     stateful: None,
+                    enforcement_mode: EnforcementMode::Enforce,
                     cgroup_regex: None,
                     process_name_regex: None,
                     pathname_regex: None,
@@ -1022,6 +1040,7 @@ rules:
                         ..Default::default()
                     },
                     stateful: None,
+                    enforcement_mode: EnforcementMode::Enforce,
                     cgroup_regex: None,
                     process_name_regex: None,
                     pathname_regex: None,
@@ -1317,7 +1336,7 @@ rules:
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].id, "TEST_001");
 
-        let std_ev = crate::alert::build_standardized_event_from_rules(&ev, &matched, None);
+        let std_ev = crate::alert::build_standardized_event_from_rules(&ev, &matched, &[], None);
         assert_eq!(std_ev.matched_rules, vec!["TEST_001".to_string()]);
         assert_eq!(std_ev.process_name, "cat");
 

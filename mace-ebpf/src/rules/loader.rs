@@ -6,10 +6,13 @@ use std::{
 use serde::Deserialize;
 
 use super::{
-    Rule, RuleError, SuppressionEntry, compile_suppression_regexes, validate_rule,
+    EnforcementMode, Rule, RuleError, SuppressionEntry, compile_suppression_regexes, validate_rule,
     validate_suppression_entry,
 };
 use crate::{pipeline::EnrichedEvent, state::ProcessState};
+
+/// Result of profiled rule evaluation: enforce matches, shadow matches, suppression ids, per-rule eval ns.
+pub type ProfiledEvaluation<'a> = (Vec<&'a Rule>, Vec<&'a Rule>, Vec<String>, Vec<(String, u64)>);
 
 #[derive(Clone, Debug, Default)]
 pub struct RuleSet {
@@ -76,24 +79,64 @@ impl RuleSet {
             .collect()
     }
 
-    /// Like [`Self::evaluate`], but also returns suppression ids that matched this event (for logging / JSON).
-    pub fn evaluate_with_suppressions(
+    /// Returns `(enforce_matches, shadow_matches, suppressed_by, per_rule_eval_ns)`.
+    pub fn evaluate_with_suppressions_profiled(
         &self,
         event: &EnrichedEvent,
         state: Option<&ProcessState>,
-    ) -> (Vec<&Rule>, Vec<String>) {
-        let matched_rules: Vec<&Rule> = self
-            .rules
-            .iter()
-            .filter(|rule| rule.matches_with_state(event, state))
-            .collect();
+    ) -> ProfiledEvaluation<'_> {
+        use std::time::Instant;
+        let mut enforce = Vec::new();
+        let mut shadow = Vec::new();
+        let mut timings = Vec::with_capacity(self.rules.len());
+        for rule in &self.rules {
+            let t0 = Instant::now();
+            let matched = rule.matches_with_state(event, state);
+            let ns = t0.elapsed().as_nanos() as u64;
+            timings.push((rule.id.clone(), ns));
+            if matched {
+                match rule.enforcement_mode {
+                    EnforcementMode::Shadow => shadow.push(rule),
+                    EnforcementMode::Enforce => enforce.push(rule),
+                }
+            }
+        }
         let suppressed_by: Vec<String> = self
             .suppressions
             .iter()
             .filter(|s| s.matches(event))
             .map(|s| s.id.clone())
             .collect();
+        (enforce, shadow, suppressed_by, timings)
+    }
+
+    pub fn evaluate_with_suppressions_split(
+        &self,
+        event: &EnrichedEvent,
+        state: Option<&ProcessState>,
+    ) -> (Vec<&Rule>, Vec<&Rule>, Vec<String>) {
+        let (e, s, sup, _) = self.evaluate_with_suppressions_profiled(event, state);
+        (e, s, sup)
+    }
+
+    pub fn evaluate_with_suppressions(
+        &self,
+        event: &EnrichedEvent,
+        state: Option<&ProcessState>,
+    ) -> (Vec<&Rule>, Vec<String>) {
+        let (enforce, shadow, suppressed_by, _) =
+            self.evaluate_with_suppressions_profiled(event, state);
+        let mut matched_rules = enforce;
+        matched_rules.extend(shadow);
         (matched_rules, suppressed_by)
+    }
+
+    pub fn evaluate_rule_timings_ns(
+        &self,
+        event: &EnrichedEvent,
+        state: Option<&ProcessState>,
+    ) -> Vec<(String, u64)> {
+        self.evaluate_with_suppressions_profiled(event, state).3
     }
 
     pub fn from_yaml_str(yaml: &str) -> Result<Self, RuleError> {

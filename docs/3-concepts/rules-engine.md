@@ -47,6 +47,42 @@ suppressions:
       flags_contains: ["PROT_READ", "PROT_WRITE", "PROT_EXEC"]
 ```
 
+Optional **`enforcement_mode`** (Phase 3 — shadow / dry-run):
+
+| Value | Behavior |
+|-------|----------|
+| `Enforce` (default) | Matched rules drive alert callbacks and appear in **`matched_rules`** in JSON. |
+| `Shadow` | Matches are **not** sent to the alert callback; they appear under **`shadow_matched_rules`** with **`shadow: true`** in the standardized JSON for offline FP analysis. |
+
+```yaml
+rules:
+  - id: "TRY_NEW_RULE"
+    name: "candidate"
+    severity: "medium"
+    description: "Measure FP rate before enforcing."
+    enforcement_mode: Shadow
+    conditions:
+      syscall: "execve"
+      argv_contains: ["curl"]
+```
+
+## Offline replay (`mace-replay`)
+
+Workspace binary **`mace-replay`** replays JSON-serialized [`MemoryEvent`](../../mace-ebpf-common) records against a rule file or directory **without** loading eBPF:
+
+```bash
+cargo build -p mace-replay --release
+./target/release/mace-replay replay --data events.json --rules ./rules.yaml
+```
+
+**`--data`** accepts: a single JSON object, a JSON array of events, or `{"events":[...]}`. Events must match the **`MemoryEvent`** JSON shape (see `mace-ebpf-common` with `serde` under the `user` feature).
+
+## Rule evaluation profiling (Prometheus)
+
+When the **`prometheus`** / **`observability`** feature is enabled and a Prometheus recorder is installed, the pipeline records **`mace_rule_eval_ns`** (histogram) per **`rule_id`**.
+
+If a single rule’s `matches_with_state` time exceeds **`MACE_RULE_EVAL_WARN_NS`** (default **50000** ns), a **`[Mace][INFO]`** line is emitted: `rule_eval_slow rule_id=…`.
+
 ## Rule file shape
 
 Top-level key **`rules`** is an array of rule objects:

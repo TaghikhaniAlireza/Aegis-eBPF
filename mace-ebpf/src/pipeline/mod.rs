@@ -22,8 +22,9 @@ use crate::{
     cmdline_context::CmdlineContextTracker,
     logging, mace_log,
     observability::metrics::{
-        record_event_ingested as record_pipeline_event_ingested, record_pipeline_latency,
-        update_reorder_buffer_size, update_worker_queue_depth,
+        record_alert_fired, record_event_ingested as record_pipeline_event_ingested,
+        record_pipeline_latency, record_rule_eval_ns, update_reorder_buffer_size,
+        update_worker_queue_depth,
     },
     rules::{RuleError, loader::RuleSet, watcher::RuleWatcher},
     start_sensor,
@@ -31,6 +32,15 @@ use crate::{
 };
 
 pub mod config;
+
+/// If any single rule's `matches_with_state` exceeds this many nanoseconds, log a warning (Phase 3 profiler).
+/// Override with `MACE_RULE_EVAL_WARN_NS` (e.g. `50000` for 50µs).
+pub fn rule_eval_warn_threshold_ns() -> u64 {
+    std::env::var("MACE_RULE_EVAL_WARN_NS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50_000)
+}
 
 const HEAP_CAPACITY_LIMIT: usize = 1024;
 
@@ -421,21 +431,38 @@ async fn run_partition_worker(
         }
 
         let state = state_tracker.get(tgid);
-        let (matches, suppressed_by) = current_rules.evaluate_with_suppressions(&event, state);
+        let (enforce_matches, shadow_matches, suppressed_by, timings) =
+            current_rules.evaluate_with_suppressions_profiled(&event, state);
         let suppress_alerts = !suppressed_by.is_empty();
 
+        for (rule_id, ns) in &timings {
+            record_rule_eval_ns(rule_id, *ns);
+            let thr = rule_eval_warn_threshold_ns();
+            if *ns > thr {
+                mace_log!(
+                    Info,
+                    "rule_eval_slow rule_id={} eval_ns={} threshold_ns={}",
+                    rule_id,
+                    ns,
+                    thr
+                );
+            }
+        }
+
         if logging::is_enabled(logging::MaceLogLevel::Event) {
-            let matched_ids: Vec<&str> = matches.iter().map(|r| r.id.as_str()).collect();
+            let enforce_ids: Vec<&str> = enforce_matches.iter().map(|r| r.id.as_str()).collect();
+            let shadow_ids: Vec<&str> = shadow_matches.iter().map(|r| r.id.as_str()).collect();
             if suppress_alerts {
                 mace_log!(
                     Suppressed,
-                    "tgid={} syscall={:?} matched_rules={:?} suppressed_by={:?}",
+                    "tgid={} syscall={:?} enforce_rules={:?} shadow_rules={:?} suppressed_by={:?}",
                     event.inner.tgid,
                     event.inner.event_type,
-                    matched_ids,
+                    enforce_ids,
+                    shadow_ids,
                     suppressed_by
                 );
-            } else if matches.is_empty() {
+            } else if enforce_matches.is_empty() && shadow_matches.is_empty() {
                 mace_log!(
                     Event,
                     "tgid={} syscall={:?} matched_rules=[]",
@@ -445,7 +472,17 @@ async fn run_partition_worker(
             }
         }
 
-        for rule in &matches {
+        for rule in &shadow_matches {
+            mace_log!(
+                Suppressed,
+                "shadow_match tgid={} rule_id={} syscall={:?} (dry-run, no alert)",
+                event.inner.tgid,
+                rule.id,
+                event.inner.event_type
+            );
+        }
+
+        for rule in &enforce_matches {
             mace_log!(
                 Alert,
                 "tgid={} rule_id={} suppressed={} suppression_ids={:?}",
@@ -463,16 +500,18 @@ async fn run_partition_worker(
                 let alert = Alert::from_rule_and_event(rule, &event);
                 cb(alert).await;
             }
+            record_alert_fired(rule.id.as_str());
         }
         #[cfg(feature = "otel")]
-        if matches.is_empty() {
+        if enforce_matches.is_empty() {
             OtelExporter::record_rule_match(&mut pipe_span, "", false);
         }
 
         if let Some(cb) = &on_standardized_event {
             let std_ev = build_standardized_event_from_rules(
                 &event,
-                &matches,
+                &enforce_matches,
+                &shadow_matches,
                 if suppress_alerts {
                     Some(suppressed_by.as_slice())
                 } else {
@@ -492,7 +531,7 @@ async fn run_partition_worker(
         }
 
         if let Some(st_mut) = state_tracker.get_mut(tgid) {
-            for rule in &matches {
+            for rule in enforce_matches.iter().chain(shadow_matches.iter()) {
                 rule.reset_sequence_progress(st_mut);
             }
         }
@@ -582,7 +621,7 @@ mod tests {
     use crate::{
         ContextEnricher, NoopEnricher, PodMetadata,
         logging::{self, take_test_logs},
-        rules::{Conditions, Rule, Severity, loader::RuleSet},
+        rules::{Conditions, EnforcementMode, Rule, Severity, loader::RuleSet},
     };
 
     fn fake_event(timestamp_ns: u64, tgid: u32, pid: u32) -> MemoryEvent {
@@ -1048,6 +1087,7 @@ mod tests {
                     ..Default::default()
                 },
                 stateful: None,
+                enforcement_mode: EnforcementMode::Enforce,
                 cgroup_regex: None,
                 process_name_regex: None,
                 pathname_regex: None,

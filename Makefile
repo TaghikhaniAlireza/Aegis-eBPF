@@ -1,6 +1,6 @@
 # Convenience targets from the repository root (see also mace-ebpf/Makefile).
 
-.PHONY: rust-build rust-build-release go-test go-test-release clients-go-test build-agent build-agent-release pack-deb fmt clippy
+.PHONY: rust-build rust-build-release go-test go-test-release clients-go-test build-agent build-agent-release build-replay pack-deb fmt clippy
 
 rust-build:
 	cargo build -p mace-ebpf
@@ -26,6 +26,9 @@ build-agent: rust-build
 build-agent-release: rust-build-release
 	mkdir -p build
 	cd clients/go && CGO_ENABLED=1 go build -tags mace_static_release -o ../../build/mace-agent ./cmd/mace-agent
+
+build-replay: rust-build
+	cargo build -p mace-replay
 
 # Requires nfpm on PATH and VERSION_TAG (e.g. 0.1.0). Example: VERSION_TAG=0.1.0 make pack-deb
 pack-deb: build-agent-release

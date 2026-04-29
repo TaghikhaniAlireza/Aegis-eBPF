@@ -46,6 +46,16 @@ pub struct StandardizedEvent {
     /// When non-empty, alerts were suppressed by YAML `suppression:` entries (matched rule ids still listed).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suppressed_by: Vec<String>,
+    /// Rule ids that matched in [`crate::rules::EnforcementMode::Shadow`] (dry-run) for this event.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shadow_matched_rules: Vec<String>,
+    /// True if at least one rule matched in Shadow mode (dry-run).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shadow: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn syscall_name_for_event(event_type: EventType) -> &'static str {
@@ -124,17 +134,42 @@ pub fn build_standardized_event(
         arguments: format_syscall_arguments(&ev.inner),
         matched_rules: matched_rule_ids.to_vec(),
         suppressed_by: suppressed_by.to_vec(),
+        shadow_matched_rules: Vec::new(),
+        shadow: false,
     }
 }
 
-/// Convenience: build from matched [`Rule`] references.
+/// Build [`StandardizedEvent`] with optional shadow-rule ids (Phase 3 dry-run).
+pub fn build_standardized_event_with_shadow(
+    ev: &EnrichedEvent,
+    matched_rule_ids: &[String],
+    suppressed_by: &[String],
+    shadow_matched_rules: &[String],
+) -> StandardizedEvent {
+    let mut ev = build_standardized_event(ev, matched_rule_ids, suppressed_by);
+    ev.shadow_matched_rules = shadow_matched_rules.to_vec();
+    ev.shadow = !shadow_matched_rules.is_empty();
+    ev
+}
+
+/// Convenience: build from matched [`Rule`] references (enforce + shadow ids).
 pub fn build_standardized_event_from_rules(
     ev: &EnrichedEvent,
-    matched: &[&Rule],
+    matched_enforce: &[&Rule],
+    matched_shadow: &[&Rule],
     suppressed_by: Option<&[String]>,
 ) -> StandardizedEvent {
-    let ids: Vec<String> = matched.iter().map(|r| r.id.clone()).collect();
-    build_standardized_event(ev, &ids, suppressed_by.unwrap_or(&[]))
+    let enforce_ids: Vec<String> = matched_enforce.iter().map(|r| r.id.clone()).collect();
+    let shadow_ids: Vec<String> = matched_shadow.iter().map(|r| r.id.clone()).collect();
+    let mut all = enforce_ids.clone();
+    all.extend(shadow_ids.clone());
+    let mut out =
+        build_standardized_event_with_shadow(ev, &all, suppressed_by.unwrap_or(&[]), &shadow_ids);
+    // matched_rules lists enforce path for backward compat "which rules fired alerts"
+    out.matched_rules = enforce_ids;
+    out.shadow_matched_rules = shadow_ids;
+    out.shadow = !out.shadow_matched_rules.is_empty();
+    out
 }
 
 impl Alert {
@@ -240,6 +275,40 @@ mod tests {
         let _ = handle.next_event().await.expect("event should arrive");
         handle.shutdown().await;
         let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    #[serial(mace_log)]
+    async fn shadow_mode_no_alert_but_standardized_json_tagged() {
+        let yaml = r#"
+rules:
+  - id: "SHADOW-1"
+    name: "dry run mprotect"
+    severity: "high"
+    description: "desc"
+    enforcement_mode: Shadow
+    conditions:
+      syscall: "mprotect"
+      flags_contains: ["PROT_EXEC"]
+"#;
+        let (alerts, alert_cb) = callback_sink();
+        let (json_lines, std_cb) = callback_std_events();
+        run_single_event_through_pipeline(
+            yaml,
+            fake_event(EventType::MprotectWX, crate::rules::PROT_EXEC),
+            Some(alert_cb),
+            Some(std_cb),
+        )
+        .await;
+
+        assert!(alerts.lock().expect("mutex").is_empty());
+
+        let lines = json_lines.lock().expect("mutex");
+        assert_eq!(lines.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&lines[0]).expect("json");
+        assert_eq!(v["matched_rules"], serde_json::json!([]));
+        assert_eq!(v["shadow_matched_rules"], serde_json::json!(["SHADOW-1"]));
+        assert_eq!(v["shadow"], serde_json::json!(true));
     }
 
     #[tokio::test]

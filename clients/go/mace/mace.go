@@ -45,6 +45,9 @@ type MaceEvent struct {
 	MatchedRules []string `json:"matched_rules"`
 	// SuppressedBy lists suppression entry ids when alerts were suppressed (matched_rules still populated).
 	SuppressedBy []string `json:"suppressed_by,omitempty"`
+	// ShadowMatchedRules lists rule ids that matched in Shadow (dry-run) mode (Phase 3).
+	ShadowMatchedRules []string `json:"shadow_matched_rules,omitempty"`
+	Shadow bool `json:"shadow,omitempty"`
 }
 
 // Client receives structured JSON events from the Rust core on a buffered channel (single active client per process).

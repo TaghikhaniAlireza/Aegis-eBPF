@@ -36,6 +36,8 @@ pub const ALERTS_FIRED_TOTAL: &str = "mace_alerts_fired_total";
 pub const PIPELINE_LATENCY_NS: &str = "mace_pipeline_latency_ns";
 pub const REORDER_BUFFER_SIZE: &str = "mace_reorder_buffer_size";
 pub const WORKER_QUEUE_DEPTH: &str = "mace_worker_queue_depth";
+/// Histogram: per-rule `matches_with_state` evaluation time (nanoseconds), labeled by `rule_id`.
+pub const RULE_EVAL_NS: &str = "mace_rule_eval_ns";
 
 #[inline]
 pub fn record_event_ingested() {
@@ -87,6 +89,15 @@ pub fn update_worker_queue_depth(worker_id: usize, depth: usize) {
     );
 }
 
+#[inline]
+#[cfg_attr(
+    not(any(feature = "prometheus", feature = "otel")),
+    allow(unused_variables)
+)]
+pub fn record_rule_eval_ns(rule_id: &str, ns: u64) {
+    record_metric!(histogram: RULE_EVAL_NS, ns, "rule_id" => rule_id.to_string());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +110,6 @@ mod tests {
         record_pipeline_latency(1000);
         update_reorder_buffer_size(42);
         update_worker_queue_depth(0, 10);
+        record_rule_eval_ns("r1", 123);
     }
 }
