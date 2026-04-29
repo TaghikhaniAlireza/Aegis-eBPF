@@ -2,6 +2,8 @@
 
 **Purpose:** This document is the canonical snapshot of the **Mace-eBPF** codebase (formerly branded *Aegis-eBPF* in some remotes and history). Use it as **shared context** for future engineering work, security review, and AI-assisted development.
 
+**Product positioning:** Mace-eBPF targets **the missing piece in real-time detection** of **code injection**, **memory anomalies**, and **suspicious behavior** across **Linux**, **cloud-native** deployments, and **Kubernetes** ecosystems—unified with **multi-language** embedding (**Rust** core, **Go** / **Python** / **C**-style FFI) so the same sensor logic can ship in agents, sidecars, and custom security products.
+
 **Scope:** Rust eBPF programs and userspace core, FFI, Go/Python clients, rule engine, CLIs, CI/CD, packaging, and observability—as implemented in this repository at the time of authoring.
 
 **Non-goals:** This file does not replace runbooks for your production environment, kernel-specific tuning guides, or threat-model documents unless those concerns are explicitly reflected in code or checked-in docs.
@@ -12,7 +14,9 @@
 
 ### 1.1 What the project does
 
-Mace-eBPF is a **Linux security / monitoring sensor** built in **Rust** on **[Aya](https://github.com/aya-rs/aya)**. It attaches **BPF tracepoint** programs to selected **syscall** enter/exit pairs (for example `execve`, `openat`, `ptrace`, and optional memory-related syscalls such as `mmap`, `mprotect`, `memfd_create`). The eBPF side samples syscall context, correlates enter/exit where needed, and ships compact records to userspace through a **ring buffer**.
+Mace-eBPF is a **Linux security / monitoring sensor** built in **Rust** on **[Aya](https://github.com/aya-rs/aya)**—designed as the **runtime observability and detection layer** that ties **kernel syscall truth** (eBPF) to **cloud-native context** (optional Kubernetes enrichment) and **operator-grade policy** (YAML rules, shadow mode, replay), with **FFI-first** delivery so the same engine is not locked to a single language or binary layout.
+
+It attaches **BPF tracepoint** programs to selected **syscall** enter/exit pairs (for example `execve`, `openat`, `ptrace`, and optional memory-related syscalls such as `mmap`, `mprotect`, `memfd_create`). The eBPF side samples syscall context, correlates enter/exit where needed, and ships compact records to userspace through a **ring buffer**.
 
 Userspace (`mace-ebpf` crate as a **library**) loads the pre-built **CO-RE-style** eBPF ELF, manages maps, drains the ring buffer, **enriches** events (optional Kubernetes metadata, `/proc` and passwd-derived fields), maintains **per-process behavioral state**, evaluates a **YAML rule engine**, emits **alerts** and **structured JSON events**, and exposes optional **Prometheus / OpenTelemetry** metrics.
 
