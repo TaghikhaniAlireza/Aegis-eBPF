@@ -12,9 +12,9 @@ use aya_ebpf::{
 };
 use aya_log_ebpf::warn;
 use mace_ebpf_common::{
-    EXECVE_SCRATCH_LEN, KernelMemoryEvent, MemorySyscall, OPENAT_PATH_MAX_LEN,
-    RING_PAYLOAD_BLOB_LEN, RING_SAMPLE_LAYOUT_VERSION, RingBufferSample, SYSCALL_ARG_COUNT,
-    TASK_COMM_LEN,
+    EXECVE_ARG_BLOB_LEN, EXECVE_MAX_ARGS_IN_BPF, EXECVE_PER_ARG_READ_MAX, EXECVE_WIRE_HEADER_LEN,
+    ExecveWireHeader, KernelMemoryEvent, MemorySyscall, OPENAT_PATH_MAX_LEN, RING_PAYLOAD_BLOB_LEN,
+    RING_SAMPLE_LAYOUT_VERSION, RingBufferSample, SYSCALL_ARG_COUNT, TASK_COMM_LEN,
 };
 
 const RINGBUF_SIZE_BYTES: u32 = 512 * 1024;
@@ -59,6 +59,15 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(RINGBUF_SIZE_BYTES, 0);
 #[map]
 static SCRATCH_ARGV: PerCpuArray<ScratchBuf> = PerCpuArray::with_max_entries(1, 0);
 
+/// Per-CPU temp for one `bpf_probe_read_user_str_bytes` argv read (must not live on BPF stack).
+#[repr(C)]
+struct ArgReadTemp {
+    buf: [u8; EXECVE_PER_ARG_READ_MAX],
+}
+
+#[map]
+static EXECV_ARG_READ_TEMP: PerCpuArray<ArgReadTemp> = PerCpuArray::with_max_entries(1, 0);
+
 /// Assemble [`RingBufferSample`] here (map-backed) so emit avoids ~4 KiB BPF stack temporaries.
 #[map]
 static RING_SAMPLE_OUT: PerCpuArray<RingBufferSample> = PerCpuArray::with_max_entries(1, 0);
@@ -91,7 +100,7 @@ static ZERO_PAYLOAD: [u8; RING_PAYLOAD_BLOB_LEN] = [0u8; RING_PAYLOAD_BLOB_LEN];
 #[inline(always)]
 fn zero_scratch_buf(scratch: &mut ScratchBuf) {
     unsafe {
-        core::ptr::write_bytes(scratch.buf.as_mut_ptr(), 0u8, EXECVE_SCRATCH_LEN);
+        core::ptr::write_bytes(scratch.buf.as_mut_ptr(), 0u8, RING_PAYLOAD_BLOB_LEN);
     }
 }
 
@@ -113,35 +122,110 @@ fn read_syscall_args(ctx: &TracePointContext) -> [u64; SYSCALL_ARG_COUNT] {
     ]
 }
 
-/// Snapshot **`argv[0]` only** (executable path) into scratch at offset 0.
-///
-/// Joining multiple argv strings in-kernel caused `copy_nonoverlapping` + loops that pushed
-/// `sys_enter_execve` past the verifier's 1M instruction limit on strict kernels.
-fn capture_execve_argv_into_scratch(argv_ptr: u64) -> usize {
+/// Pack argv into `scratch.buf`: v11 wire = [`ExecveWireHeader`] + NUL-separated strings (bounded).
+fn capture_execve_argv_into_scratch(ctx: &TracePointContext, argv_ptr: u64) -> u32 {
     let Some(scratch_ptr) = SCRATCH_ARGV.get_ptr_mut(0) else {
         return 0;
     };
     let scratch = unsafe { &mut *scratch_ptr };
     zero_scratch_buf(scratch);
 
+    let Some(temp_ptr) = EXECV_ARG_READ_TEMP.get_ptr_mut(0) else {
+        return 0;
+    };
+    let temp = unsafe { &mut *temp_ptr };
+    unsafe {
+        core::ptr::write_bytes(temp.buf.as_mut_ptr(), 0u8, EXECVE_PER_ARG_READ_MAX);
+    }
+
     if argv_ptr == 0 {
         return 0;
     }
 
-    let argv0 = match unsafe { bpf_probe_read_user(argv_ptr as *const u64) } {
-        Ok(p) => p,
-        Err(_) => return 0,
-    };
-    if argv0 == 0 {
-        return 0;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32;
+
+    let payload_base = EXECVE_WIRE_HEADER_LEN;
+    let payload_cap = EXECVE_ARG_BLOB_LEN;
+    let mut write_off: usize = 0;
+    let mut args_seen: u32 = 0;
+    let mut truncated: u32 = 0;
+
+    let mut i: u32 = 0;
+    while i < EXECVE_MAX_ARGS_IN_BPF {
+        let entry_off = (i as usize).saturating_mul(core::mem::size_of::<u64>());
+        let user_arg_ptr = match unsafe {
+            bpf_probe_read_user::<u64>((argv_ptr as usize + entry_off) as *const u64)
+        } {
+            Ok(p) => p,
+            Err(_) => {
+                truncated = 1;
+                break;
+            }
+        };
+
+        if user_arg_ptr == 0 {
+            break;
+        }
+
+        let n = match unsafe {
+            bpf_probe_read_user_str_bytes(
+                user_arg_ptr as *const u8,
+                &mut temp.buf[..EXECVE_PER_ARG_READ_MAX],
+            )
+        } {
+            Ok(b) => b.len(),
+            Err(_) => {
+                truncated = 1;
+                break;
+            }
+        };
+
+        if n == 0 {
+            args_seen = args_seen.saturating_add(1);
+            i = i.saturating_add(1);
+            continue;
+        }
+
+        let need = n.saturating_add(1);
+        if write_off.saturating_add(need) > payload_cap {
+            truncated = 1;
+            break;
+        }
+
+        let dst_start = payload_base.saturating_add(write_off);
+        if dst_start.saturating_add(n) > scratch.buf.len() {
+            truncated = 1;
+            break;
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                temp.buf.as_ptr(),
+                scratch.buf.as_mut_ptr().add(dst_start),
+                n,
+            );
+            *scratch.buf.get_unchecked_mut(dst_start.saturating_add(n)) = 0;
+        }
+        write_off = write_off.saturating_add(need);
+        args_seen = args_seen.saturating_add(1);
+        i = i.saturating_add(1);
     }
 
-    match unsafe {
-        bpf_probe_read_user_str_bytes(argv0 as *const u8, &mut scratch.buf[..EXECVE_SCRATCH_LEN])
-    } {
-        Ok(b) => b.len(),
-        Err(_) => 0,
+    let hdr = ExecveWireHeader {
+        pid,
+        args_count: args_seen,
+        args_len: write_off as u32,
+        is_truncated: truncated,
+    };
+    unsafe {
+        core::ptr::write_unaligned(scratch.buf.as_mut_ptr().cast(), hdr);
     }
+
+    if truncated == 1 && args_seen == 0 && write_off == 0 {
+        warn!(ctx, "execve argv capture truncated before first arg");
+    }
+
+    args_seen
 }
 
 fn capture_openat_path_into_scratch(path_ptr: u64) {
@@ -237,7 +321,7 @@ fn store_pending_event_for_execve(ctx: &TracePointContext) -> u32 {
     let now_ns = unsafe { bpf_ktime_get_ns() };
     let comm = bpf_get_current_comm().unwrap_or([0; TASK_COMM_LEN]);
     let args = read_syscall_args(ctx);
-    let _len = capture_execve_argv_into_scratch(args[1]);
+    let _n = capture_execve_argv_into_scratch(ctx, args[1]);
 
     let kernel = KernelMemoryEvent {
         timestamp_ns: now_ns,

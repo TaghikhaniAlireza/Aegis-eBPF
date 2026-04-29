@@ -118,13 +118,15 @@ Matching is case-insensitive for the syscall string.
 
 ## Command-line / argv context
 
-The kernel probe captures a **short snapshot** of exec-related text (`argv[0]` from eBPF on strict kernels). For matching, the engine builds a **haystack** string in this order:
+The kernel probe captures **`execve` argv at syscall entry** (ring layout **v11**): up to **16** arguments, each up to **128** bytes per `bpf_probe_read_user_str_bytes`, packed into a **400-byte** NUL-separated blob with an `ExecveWireHeader` (`args_count`, `args_len`, `is_truncated`). This removes the **TOCTOU** gap where userspace-only `/proc/<pid>/cmdline` reads could disagree with the syscall-time image.
 
-1. Non-empty **`execve_cmdline`** from the event (eBPF snapshot),
+For matching, the engine still builds a **haystack** string in this order:
+
+1. Non-empty **`execve_cmdline`** from the event (eBPF snapshot — now space-joined full captured argv when v11 is present),
 2. else pipeline **`cmdline_context`** (last exec line attributed to the thread group),
 3. else a read of **`/proc/<pid>/cmdline`** (arguments joined with spaces).
 
-Rules that use **`argv_contains`**, **`cmdline_contains_any`**, or **`cmdline_context_pattern`** operate on this normalized haystack — so substring rules still work when full argv is only visible from `/proc`.
+Rules that use **`argv_contains`**, **`cmdline_contains_any`**, or **`cmdline_context_pattern`** operate on this normalized haystack — so substring rules still work when the in-kernel capture is truncated or empty.
 
 ## Condition fields (`conditions`)
 

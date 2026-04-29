@@ -205,7 +205,7 @@ Prioritized themes (short):
 
 1. **Coverage and evidence:** Add an automated **coverage report** (and optional threshold) for `mace-ebpf` core modules; today coverage % is not a merge gate.
 2. **FFI semantics documentation:** Clearly distinguish **“safe copy-in/copy-out”** from **zero-copy** in public docs if external stakeholders still use Phase-4 zero-copy language.
-3. **Execve argv depth:** eBPF captures **`argv[0]` only** (verifier instruction budget tradeoff, documented in `mace-ebpf-common`); full cmdline relies on userspace enrichment—ensure policies account for that.
+3. **Execve argv limits:** eBPF captures a **bounded** argv snapshot at `sys_enter_execve` (v11 wire: header + 400-byte NUL-separated args, max 16 args × 128 bytes read per arg). **`is_truncated`** indicates overflow; there is **no** second-chunk protocol—operators rely on haystack fallbacks (`cmdline_context`, `/proc`) only when the snapshot is incomplete.
 4. **Criterion variance:** Concurrent bench groups (e.g. SPSC throughput) can show high variance on shared CI runners; gates intentionally focus on **stable single-thread medians**; revisit if stricter SPSC regression detection is required.
 5. **Kubernetes operational hardening:** RBAC, timeout behavior, and cache staleness policies for `KubernetesEnricher` in large clusters.
 6. **Matrix ownership:** Keep **`ubuntu-latest`** kernel drift in mind for `core-compat`; document how often baselines should be refreshed.

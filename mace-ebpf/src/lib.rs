@@ -14,6 +14,7 @@ pub mod audit;
 pub mod cmdline_context;
 pub mod engine_stage;
 pub mod enrichment;
+pub mod execve_wire;
 pub mod ffi;
 pub mod kernel_health;
 pub mod logging;
