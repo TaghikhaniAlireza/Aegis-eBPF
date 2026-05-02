@@ -32,6 +32,8 @@ Expect stdout to mention matched rule **`OFFENSE_GTFONODE_CHILD_PROCESS_SHELL`**
 
 **B — Live sensor + `mace-agent` (real execve from Node; requires root for BPF)**
 
+If `mace_start_pipeline` logs **`BPF_PROG_LOAD` … `sys_enter_execve` … Permission denied**, pull the latest `main` first (recent releases fix verifier issues around `bpf_probe_read_user_str_bytes` NUL termination). If it still fails on a very strict kernel, rebuild the Rust library with **`MACE_EBPF_EXECVE_ARGV0_ONLY=1`** (see root `Makefile`, target **`rust-build-ebpf-argv0`**) so `execve` captures **`argv[0]` only**—note that **`OFFENSE_GTFONODE_CHILD_PROCESS_SHELL`** matches **`argv_contains`** across multiple argv slots, so that rule typically **will not fire** on live Node execve in argv0-only mode; use **section A** (`mace-replay` + fixture) to validate the rule, or relax detection to patterns visible in `argv[0]` / `/proc` haystack.
+
 ```bash
 cargo build -p mace-ebpf
 make build-agent
