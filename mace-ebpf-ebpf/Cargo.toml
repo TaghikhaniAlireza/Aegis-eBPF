@@ -11,6 +11,9 @@ ebpf-bin = []
 # Smaller `sys_enter_execve` program: only `argv[0]` (wire format unchanged). Enable via
 # `MACE_EBPF_EXECVE_ARGV0_ONLY=1` when building `mace-ebpf` if multi-arg capture fails verifier load.
 execve_argv0_only = []
+# Skip all user-memory argv reads at `sys_enter_execve` (header-only payload, `is_truncated=1`).
+# Enable via `MACE_EBPF_EXECVE_NO_USER_ARGV=1` to diagnose verifier vs `bpf_probe_read_user*` issues.
+execve_no_user_argv = []
 
 [dependencies]
 mace-ebpf-common = { path = "../mace-ebpf-common" }
