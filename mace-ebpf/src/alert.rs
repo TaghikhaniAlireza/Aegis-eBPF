@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::{
     EnrichedEvent,
+    proc_cmdline::read_proc_cmdline_joined,
     rules::{Rule, Severity},
 };
 
@@ -160,8 +161,10 @@ pub fn build_standardized_event(
 ) -> StandardizedEvent {
     let cmdline = if !ev.inner.execve_cmdline.is_empty() {
         ev.inner.execve_cmdline.clone()
+    } else if let Some(ctx) = ev.cmdline_context.clone().filter(|s| !s.is_empty()) {
+        ctx
     } else {
-        ev.cmdline_context.clone().unwrap_or_default()
+        read_proc_cmdline_joined(ev.inner.tgid).unwrap_or_default()
     };
     let username = ev.username.clone().unwrap_or_default();
 

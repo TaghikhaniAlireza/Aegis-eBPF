@@ -23,6 +23,7 @@ pub mod logging;
 pub mod observability;
 pub mod passwd;
 pub mod pipeline;
+pub mod proc_cmdline;
 pub mod proto;
 pub mod rules;
 pub mod state;
