@@ -117,13 +117,28 @@ fn main() -> anyhow::Result<()> {
         manifest_path,
         ..
     } = ebpf_package;
+    println!("cargo:rerun-if-env-changed=MACE_EBPF_EXECVE_ARGV0_ONLY");
+    let argv0_only = env::var_os("MACE_EBPF_EXECVE_ARGV0_ONLY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+        .unwrap_or(false);
+    let ebpf_features: &[&str] = if argv0_only {
+        &["ebpf-bin", "execve_argv0_only"]
+    } else {
+        &["ebpf-bin"]
+    };
+    if argv0_only {
+        println!(
+            "cargo:warning=Building eBPF with MACE_EBPF_EXECVE_ARGV0_ONLY (execve captures argv[0] only)"
+        );
+    }
+
     let ebpf_package = aya_build::Package {
         name: name.as_str(),
         root_dir: manifest_path
             .parent()
             .ok_or_else(|| anyhow!("no parent for {manifest_path}"))?
             .as_str(),
-        features: &["ebpf-bin"],
+        features: ebpf_features,
         ..Default::default()
     };
     let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR missing")?);

@@ -154,6 +154,11 @@ fn capture_execve_argv_into_scratch(ctx: &TracePointContext, argv_ptr: u64) -> u
 
     let mut i: u32 = 0;
     while i < EXECVE_MAX_ARGS_IN_BPF {
+        #[cfg(feature = "execve_argv0_only")]
+        if i > 0 {
+            break;
+        }
+
         let entry_off = (i as usize).saturating_mul(core::mem::size_of::<u64>());
         let user_arg_ptr = match unsafe {
             bpf_probe_read_user::<u64>((argv_ptr as usize + entry_off) as *const u64)
@@ -241,11 +246,10 @@ fn capture_openat_path_into_scratch(path_ptr: u64) {
     if path_ptr == 0 {
         return;
     }
+    // Same NUL-terminator rule as execve argv: helper needs one spare byte in the destination.
+    let read_cap = OPENAT_PATH_MAX_LEN.saturating_sub(1);
     let _ = unsafe {
-        bpf_probe_read_user_str_bytes(
-            path_ptr as *const u8,
-            &mut scratch.buf[..OPENAT_PATH_MAX_LEN],
-        )
+        bpf_probe_read_user_str_bytes(path_ptr as *const u8, &mut scratch.buf[..read_cap])
     };
 }
 

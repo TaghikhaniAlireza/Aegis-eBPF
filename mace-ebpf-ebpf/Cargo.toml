@@ -8,6 +8,9 @@ edition.workspace = true
 # host does not try to link it as a normal Linux binary (which would conflict with `std` / panic).
 default = []
 ebpf-bin = []
+# Smaller `sys_enter_execve` program: only `argv[0]` (wire format unchanged). Enable via
+# `MACE_EBPF_EXECVE_ARGV0_ONLY=1` when building `mace-ebpf` if multi-arg capture fails verifier load.
+execve_argv0_only = []
 
 [dependencies]
 mace-ebpf-common = { path = "../mace-ebpf-common" }
