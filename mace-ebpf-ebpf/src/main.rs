@@ -187,14 +187,14 @@ fn capture_execve_argv_into_scratch(ctx: &TracePointContext, argv_ptr: u64) -> u
             continue;
         }
 
-        let need = n.saturating_add(1);
+        // `bpf_probe_read_user_str_bytes` returns bytes **including** the terminating NUL.
+        let need = n;
         if write_off.saturating_add(need) > payload_cap {
             truncated = 1;
             break;
         }
 
         let dst_start = payload_base.saturating_add(write_off);
-        // Must fit `n` bytes plus trailing NUL inside `scratch.buf` (verifier rejects write at buf.len()).
         if dst_start.saturating_add(need) > scratch.buf.len() {
             truncated = 1;
             break;
@@ -203,9 +203,8 @@ fn capture_execve_argv_into_scratch(ctx: &TracePointContext, argv_ptr: u64) -> u
             core::ptr::copy_nonoverlapping(
                 temp.buf.as_ptr(),
                 scratch.buf.as_mut_ptr().add(dst_start),
-                n,
+                need,
             );
-            *scratch.buf.get_unchecked_mut(dst_start.saturating_add(n)) = 0;
         }
         write_off = write_off.saturating_add(need);
         args_seen = args_seen.saturating_add(1);
