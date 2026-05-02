@@ -118,15 +118,33 @@ fn main() -> anyhow::Result<()> {
         ..
     } = ebpf_package;
     println!("cargo:rerun-if-env-changed=MACE_EBPF_EXECVE_ARGV0_ONLY");
+    println!("cargo:rerun-if-env-changed=MACE_EBPF_EXECVE_NO_USER_ARGV");
+
     let argv0_only = env::var_os("MACE_EBPF_EXECVE_ARGV0_ONLY")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
         .unwrap_or(false);
-    let ebpf_features: &[&str] = if argv0_only {
+    let no_user_argv = env::var_os("MACE_EBPF_EXECVE_NO_USER_ARGV")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+        .unwrap_or(false);
+
+    if argv0_only && no_user_argv {
+        println!(
+            "cargo:warning=MACE_EBPF_EXECVE_NO_USER_ARGV wins over MACE_EBPF_EXECVE_ARGV0_ONLY"
+        );
+    }
+    let ebpf_features: &[&str] = if no_user_argv {
+        &["ebpf-bin", "execve_no_user_argv"]
+    } else if argv0_only {
         &["ebpf-bin", "execve_argv0_only"]
     } else {
         &["ebpf-bin"]
     };
-    if argv0_only {
+
+    if no_user_argv {
+        println!(
+            "cargo:warning=Building eBPF with MACE_EBPF_EXECVE_NO_USER_ARGV (execve enter skips user argv reads; header-only)"
+        );
+    } else if argv0_only {
         println!(
             "cargo:warning=Building eBPF with MACE_EBPF_EXECVE_ARGV0_ONLY (execve captures argv[0] only)"
         );

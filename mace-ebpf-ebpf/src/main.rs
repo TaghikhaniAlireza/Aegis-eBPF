@@ -1,20 +1,24 @@
 #![no_std]
 #![no_main]
 
+#[cfg(not(feature = "execve_no_user_argv"))]
+use aya_ebpf::helpers::bpf_probe_read_user;
 use aya_ebpf::{
     helpers::{
         bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns,
-        bpf_probe_read_user, bpf_probe_read_user_str_bytes,
+        bpf_probe_read_user_str_bytes,
     },
     macros::{map, tracepoint},
     maps::{Array, LruHashMap, PerCpuArray, RingBuf},
     programs::TracePointContext,
 };
 use aya_log_ebpf::warn;
+#[cfg(not(feature = "execve_no_user_argv"))]
+use mace_ebpf_common::{EXECVE_ARG_BLOB_LEN, EXECVE_MAX_ARGS_IN_BPF, EXECVE_WIRE_HEADER_LEN};
 use mace_ebpf_common::{
-    EXECVE_ARG_BLOB_LEN, EXECVE_MAX_ARGS_IN_BPF, EXECVE_PER_ARG_READ_MAX, EXECVE_WIRE_HEADER_LEN,
-    ExecveWireHeader, KernelMemoryEvent, MemorySyscall, OPENAT_PATH_MAX_LEN, RING_PAYLOAD_BLOB_LEN,
-    RING_SAMPLE_LAYOUT_VERSION, RingBufferSample, SYSCALL_ARG_COUNT, TASK_COMM_LEN,
+    EXECVE_PER_ARG_READ_MAX, ExecveWireHeader, KernelMemoryEvent, MemorySyscall,
+    OPENAT_PATH_MAX_LEN, RING_PAYLOAD_BLOB_LEN, RING_SAMPLE_LAYOUT_VERSION, RingBufferSample,
+    SYSCALL_ARG_COUNT, TASK_COMM_LEN,
 };
 
 const RINGBUF_SIZE_BYTES: u32 = 512 * 1024;
@@ -124,117 +128,153 @@ fn read_syscall_args(ctx: &TracePointContext) -> [u64; SYSCALL_ARG_COUNT] {
 
 /// Pack argv into `scratch.buf`: v11 wire = [`ExecveWireHeader`] + NUL-separated strings (bounded).
 fn capture_execve_argv_into_scratch(ctx: &TracePointContext, argv_ptr: u64) -> u32 {
+    #[cfg(feature = "execve_no_user_argv")]
+    {
+        let _ = (ctx, argv_ptr);
+        let Some(scratch_ptr) = SCRATCH_ARGV.get_ptr_mut(0) else {
+            return 0;
+        };
+        let scratch = unsafe { &mut *scratch_ptr };
+        zero_scratch_buf(scratch);
+        let pid_tgid = bpf_get_current_pid_tgid();
+        let pid = pid_tgid as u32;
+        let hdr = ExecveWireHeader {
+            pid,
+            args_count: 0,
+            args_len: 0,
+            is_truncated: 1,
+        };
+        unsafe {
+            core::ptr::write_unaligned(scratch.buf.as_mut_ptr().cast(), hdr);
+        }
+        return 0;
+    }
+
+    #[cfg(not(feature = "execve_no_user_argv"))]
     let Some(scratch_ptr) = SCRATCH_ARGV.get_ptr_mut(0) else {
         return 0;
     };
+    #[cfg(not(feature = "execve_no_user_argv"))]
     let scratch = unsafe { &mut *scratch_ptr };
+    #[cfg(not(feature = "execve_no_user_argv"))]
     zero_scratch_buf(scratch);
 
+    #[cfg(not(feature = "execve_no_user_argv"))]
     let Some(temp_ptr) = EXECV_ARG_READ_TEMP.get_ptr_mut(0) else {
         return 0;
     };
+    #[cfg(not(feature = "execve_no_user_argv"))]
     let temp = unsafe { &mut *temp_ptr };
+    #[cfg(not(feature = "execve_no_user_argv"))]
     unsafe {
         // Clear the full map value so any bytes past `read_cap` stay deterministic.
         core::ptr::write_bytes(temp.buf.as_mut_ptr(), 0u8, EXECVE_PER_ARG_READ_MAX);
     }
 
+    #[cfg(not(feature = "execve_no_user_argv"))]
     if argv_ptr == 0 {
         return 0;
     }
 
+    #[cfg(not(feature = "execve_no_user_argv"))]
     let pid_tgid = bpf_get_current_pid_tgid();
+    #[cfg(not(feature = "execve_no_user_argv"))]
     let pid = pid_tgid as u32;
 
+    #[cfg(not(feature = "execve_no_user_argv"))]
     let payload_base = EXECVE_WIRE_HEADER_LEN;
-    let payload_cap = EXECVE_ARG_BLOB_LEN;
-    let mut write_off: usize = 0;
-    let mut args_seen: u32 = 0;
-    let mut truncated: u32 = 0;
 
-    let mut i: u32 = 0;
-    while i < EXECVE_MAX_ARGS_IN_BPF {
-        #[cfg(feature = "execve_argv0_only")]
-        if i > 0 {
-            break;
-        }
+    #[cfg(not(feature = "execve_no_user_argv"))]
+    {
+        let payload_cap = EXECVE_ARG_BLOB_LEN;
+        let mut write_off: usize = 0;
+        let mut args_seen: u32 = 0;
+        let mut truncated: u32 = 0;
 
-        let entry_off = (i as usize).saturating_mul(core::mem::size_of::<u64>());
-        let user_arg_ptr = match unsafe {
-            bpf_probe_read_user::<u64>((argv_ptr as usize + entry_off) as *const u64)
-        } {
-            Ok(p) => p,
-            Err(_) => {
+        let mut i: u32 = 0;
+        while i < EXECVE_MAX_ARGS_IN_BPF {
+            #[cfg(feature = "execve_argv0_only")]
+            if i > 0 {
+                break;
+            }
+
+            let entry_off = (i as usize).saturating_mul(core::mem::size_of::<u64>());
+            let user_arg_ptr = match unsafe {
+                bpf_probe_read_user::<u64>((argv_ptr as usize + entry_off) as *const u64)
+            } {
+                Ok(p) => p,
+                Err(_) => {
+                    truncated = 1;
+                    break;
+                }
+            };
+
+            if user_arg_ptr == 0 {
+                break;
+            }
+
+            // Reserve one byte in `temp` so the kernel helper can always write a trailing NUL after
+            // a maximally long user string (63 content bytes + NUL). Passing the full 64-byte slice
+            // makes `bpf_probe_read_user_str` try to NUL-terminate at index 64, which is OOB for
+            // `ArgReadTemp::buf` and trips strict verifiers (`invalid access … off=208 size=1`).
+            let read_cap = EXECVE_PER_ARG_READ_MAX.saturating_sub(1);
+            let n = match unsafe {
+                bpf_probe_read_user_str_bytes(user_arg_ptr as *const u8, &mut temp.buf[..read_cap])
+            } {
+                Ok(b) => b.len(),
+                Err(_) => {
+                    truncated = 1;
+                    break;
+                }
+            };
+
+            if n == 0 {
+                args_seen = args_seen.saturating_add(1);
+                i = i.saturating_add(1);
+                continue;
+            }
+
+            // `bpf_probe_read_user_str_bytes` returns the string **without** the NUL; the helper
+            // wrote the terminator into `temp.buf[n]` within `read_cap` bytes.
+            let need = n.saturating_add(1);
+            if write_off.saturating_add(need) > payload_cap {
                 truncated = 1;
                 break;
             }
-        };
 
-        if user_arg_ptr == 0 {
-            break;
-        }
-
-        // Reserve one byte in `temp` so the kernel helper can always write a trailing NUL after
-        // a maximally long user string (63 content bytes + NUL). Passing the full 64-byte slice
-        // makes `bpf_probe_read_user_str` try to NUL-terminate at index 64, which is OOB for
-        // `ArgReadTemp::buf` and trips strict verifiers (`invalid access … off=208 size=1`).
-        let read_cap = EXECVE_PER_ARG_READ_MAX.saturating_sub(1);
-        let n = match unsafe {
-            bpf_probe_read_user_str_bytes(user_arg_ptr as *const u8, &mut temp.buf[..read_cap])
-        } {
-            Ok(b) => b.len(),
-            Err(_) => {
+            let dst_start = payload_base.saturating_add(write_off);
+            if dst_start.saturating_add(need) > scratch.buf.len() {
                 truncated = 1;
                 break;
             }
-        };
-
-        if n == 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    temp.buf.as_ptr(),
+                    scratch.buf.as_mut_ptr().add(dst_start),
+                    need,
+                );
+            }
+            write_off = write_off.saturating_add(need);
             args_seen = args_seen.saturating_add(1);
             i = i.saturating_add(1);
-            continue;
         }
 
-        // `bpf_probe_read_user_str_bytes` returns the string **without** the NUL; the helper
-        // wrote the terminator into `temp.buf[n]` within `read_cap` bytes.
-        let need = n.saturating_add(1);
-        if write_off.saturating_add(need) > payload_cap {
-            truncated = 1;
-            break;
-        }
-
-        let dst_start = payload_base.saturating_add(write_off);
-        if dst_start.saturating_add(need) > scratch.buf.len() {
-            truncated = 1;
-            break;
-        }
+        let hdr = ExecveWireHeader {
+            pid,
+            args_count: args_seen,
+            args_len: write_off as u32,
+            is_truncated: truncated,
+        };
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                temp.buf.as_ptr(),
-                scratch.buf.as_mut_ptr().add(dst_start),
-                need,
-            );
+            core::ptr::write_unaligned(scratch.buf.as_mut_ptr().cast(), hdr);
         }
-        write_off = write_off.saturating_add(need);
-        args_seen = args_seen.saturating_add(1);
-        i = i.saturating_add(1);
-    }
 
-    let hdr = ExecveWireHeader {
-        pid,
-        args_count: args_seen,
-        args_len: write_off as u32,
-        is_truncated: truncated,
-    };
-    unsafe {
-        core::ptr::write_unaligned(scratch.buf.as_mut_ptr().cast(), hdr);
-    }
+        if truncated == 1 && args_seen == 0 && write_off == 0 {
+            warn!(ctx, "execve argv capture truncated before first arg");
+        }
 
-    if truncated == 1 && args_seen == 0 && write_off == 0 {
-        warn!(ctx, "execve argv capture truncated before first arg");
+        args_seen
     }
-
-    args_seen
 }
 
 fn capture_openat_path_into_scratch(path_ptr: u64) {

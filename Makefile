@@ -1,6 +1,6 @@
 # Convenience targets from the repository root (see also mace-ebpf/Makefile).
 
-.PHONY: rust-build rust-build-release rust-build-ebpf-argv0 rust-build-release-ebpf-argv0 go-test go-test-release clients-go-test build-agent build-agent-ebpf-argv0 build-agent-release build-replay pack-deb fmt clippy
+.PHONY: rust-build rust-build-release rust-build-ebpf-argv0 rust-build-release-ebpf-argv0 rust-build-ebpf-no-user-argv rust-build-release-ebpf-no-user-argv go-test go-test-release clients-go-test build-agent build-agent-ebpf-argv0 build-agent-ebpf-no-user-argv build-agent-release build-replay pack-deb fmt clippy
 
 rust-build:
 	cargo build -p mace-ebpf
@@ -9,11 +9,18 @@ rust-build:
 rust-build-ebpf-argv0:
 	MACE_EBPF_EXECVE_ARGV0_ONLY=1 cargo build -p mace-ebpf
 
+# Execve enter skips all bpf_probe_read_user* argv capture (diagnostic / strict hosts).
+rust-build-ebpf-no-user-argv:
+	MACE_EBPF_EXECVE_NO_USER_ARGV=1 cargo build -p mace-ebpf
+
 rust-build-release:
 	cargo build --release -p mace-ebpf
 
 rust-build-release-ebpf-argv0:
 	MACE_EBPF_EXECVE_ARGV0_ONLY=1 cargo build --release -p mace-ebpf
+
+rust-build-release-ebpf-no-user-argv:
+	MACE_EBPF_EXECVE_NO_USER_ARGV=1 cargo build --release -p mace-ebpf
 
 # Go SDK in-tree (static debug lib); requires CGO + same libc as Rust build.
 go-test: rust-build
@@ -32,6 +39,10 @@ build-agent: rust-build
 
 # Same as `build-agent` but links against eBPF built with `MACE_EBPF_EXECVE_ARGV0_ONLY=1`.
 build-agent-ebpf-argv0: rust-build-ebpf-argv0
+	mkdir -p build
+	cd clients/go && CGO_ENABLED=1 go build -o ../../build/mace-agent ./cmd/mace-agent
+
+build-agent-ebpf-no-user-argv: rust-build-ebpf-no-user-argv
 	mkdir -p build
 	cd clients/go && CGO_ENABLED=1 go build -o ../../build/mace-agent ./cmd/mace-agent
 
