@@ -129,7 +129,7 @@ rules:
     conditions:
       syscall: "execve"
       process_name_pattern: "^gdb$"
-      cmdline_context_pattern: '(?i)\bgdb\b.*-ex\s+[''"][^''"]*!/'
+      cmdline_context_pattern: '(?i)\bgdb\b.*-ex\s+[^/\s][^\n]*!/'
       argv_contains:
         - "-ex"
 
@@ -148,7 +148,7 @@ rules:
     conditions:
       syscall: "execve"
       process_name_pattern: "^gdb$"
-      cmdline_context_pattern: '(?i)-ex\s+[''"][^''"]*python[^''"]*(setuid|seteuid|setresuid)\s*\('
+      cmdline_context_pattern: '(?i)-ex\s+[^/\s][^\n]*python[^\n]*(setuid|seteuid|setresuid)\s*\('
       argv_contains:
         - "python"
 

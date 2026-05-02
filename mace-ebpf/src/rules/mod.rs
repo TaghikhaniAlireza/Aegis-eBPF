@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     enrichment::normalization::{normalize_cmdline, normalize_unix_path},
     pipeline::EnrichedEvent,
+    proc_cmdline::read_proc_cmdline_joined,
     state::ProcessState,
 };
 
@@ -864,7 +865,7 @@ fn rule_cmdline_haystack(event: &EnrichedEvent) -> Option<String> {
     } else {
         // Prefer TGID: `event.inner.pid` can be a thread id; `/proc/<tgid>/cmdline` is the stable
         // leader cmdline for rule haystack when eBPF argv is empty (default `execve_no_user_argv` build).
-        read_proc_cmdline_flat(event.inner.tgid)
+        read_proc_cmdline_joined(event.inner.tgid)
     }?;
     Some(normalize_execve_style_cmdline(&raw))
 }
@@ -883,18 +884,6 @@ fn normalize_execve_style_cmdline(s: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn read_proc_cmdline_flat(pid: u32) -> Option<String> {
-    let path = format!("/proc/{pid}/cmdline");
-    let raw = fs::read(&path).ok()?;
-    let s = String::from_utf8_lossy(&raw);
-    Some(
-        s.split('\0')
-            .filter(|p| !p.is_empty())
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
 }
 
 /// Task `comm` from `/proc/<pid>/comm` (16-byte kernel `comm`, newline-terminated in procfs).

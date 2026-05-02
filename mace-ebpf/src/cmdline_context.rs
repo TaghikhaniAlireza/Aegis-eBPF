@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use mace_ebpf_common::{EventType, MemoryEvent};
 
+use crate::proc_cmdline::read_proc_cmdline_joined;
+
 /// Retain execve cmdline text per thread group for `ttl_ns` (wall time via event timestamps).
 #[derive(Debug)]
 pub struct CmdlineContextTracker {
@@ -32,7 +34,12 @@ impl CmdlineContextTracker {
                 self.map.insert(tgid, (event.execve_cmdline.clone(), ts));
                 return Some(event.execve_cmdline.clone());
             }
-            // Execve without captured argv: keep previous context if still fresh.
+            // eBPF argv empty (e.g. `execve_no_user_argv` build): seed context from `/proc` so
+            // rules and JSON `cmdline` match the same haystack as `rule_cmdline_haystack`.
+            if let Some(fallback) = read_proc_cmdline_joined(tgid) {
+                self.map.insert(tgid, (fallback.clone(), ts));
+                return Some(fallback);
+            }
         }
 
         self.map
