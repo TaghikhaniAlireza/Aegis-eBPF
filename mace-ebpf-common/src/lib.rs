@@ -26,7 +26,9 @@ pub const SYSCALL_ARG_COUNT: usize = 6;
 /// of **NUL-separated** argv strings captured at `sys_enter_execve` (TOCTOU-safe vs `/proc/cmdline`).
 /// v12: **tighter argv caps** (fewer args / shorter per-arg read / smaller blob) to reduce verifier
 /// instruction complexity on strict kernels; bump `RING_SAMPLE_LAYOUT_VERSION` when wire changes.
-pub const RING_SAMPLE_LAYOUT_VERSION: u32 = 12;
+/// v13: **minimal argv capture** for maximum verifier/kernel compatibility: **4** argv slots,
+/// **64** bytes per `bpf_probe_read_user_str_bytes`, **192**-byte total argv blob after header.
+pub const RING_SAMPLE_LAYOUT_VERSION: u32 = 13;
 
 /// Max bytes for `openat` pathname snapshot in BPF (including NUL).
 pub const OPENAT_PATH_MAX_LEN: usize = 64;
@@ -35,7 +37,7 @@ pub const OPENAT_PATH_MAX_LEN: usize = 64;
 pub const EXECVE_SCRATCH_LEN: usize = 256;
 
 /// Max argv bytes packed after [`ExecveWireHeader`] inside `RingBufferSample::payload_blob` for execve (v11+).
-pub const EXECVE_ARG_BLOB_LEN: usize = 288;
+pub const EXECVE_ARG_BLOB_LEN: usize = 192;
 
 /// Packed metadata written by eBPF at the start of the execve payload (v11+).
 #[repr(C)]
@@ -60,10 +62,10 @@ impl ExecveWireHeader {
 pub const EXECVE_ARGV_MAX_ARGS: u32 = EXECVE_MAX_ARGS_IN_BPF;
 
 /// Maximum argv entries read in eBPF (verifier-bounded loop; lower = smaller program).
-pub const EXECVE_MAX_ARGS_IN_BPF: u32 = 8;
+pub const EXECVE_MAX_ARGS_IN_BPF: u32 = 4;
 
 /// Max bytes read per argv string in one `bpf_probe_read_user_str_bytes` call (stack / insn tradeoff).
-pub const EXECVE_PER_ARG_READ_MAX: usize = 96;
+pub const EXECVE_PER_ARG_READ_MAX: usize = 64;
 
 /// Retained name: upper bound for single-string decode paths (memfd); not the full v11 exec blob.
 pub const EXECVE_ARG_STR_MAX: usize = EXECVE_SCRATCH_LEN;
