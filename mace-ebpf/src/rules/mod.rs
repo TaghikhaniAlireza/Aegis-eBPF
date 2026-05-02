@@ -862,7 +862,10 @@ fn rule_cmdline_haystack(event: &EnrichedEvent) -> Option<String> {
             None
         }
     } else {
-        read_proc_cmdline_flat(event.inner.pid)
+        // Prefer TGID: `event.inner.pid` is the kernel thread id at capture time; `/proc/<tid>/cmdline`
+        // usually mirrors the thread group, but using the leader is more predictable for rules
+        // when eBPF argv is empty (e.g. diagnostic `execve_no_user_argv` builds).
+        read_proc_cmdline_flat(event.inner.tgid)
     }?;
     Some(normalize_execve_style_cmdline(&raw))
 }
