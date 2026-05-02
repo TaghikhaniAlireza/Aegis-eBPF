@@ -194,7 +194,8 @@ fn capture_execve_argv_into_scratch(ctx: &TracePointContext, argv_ptr: u64) -> u
         }
 
         let dst_start = payload_base.saturating_add(write_off);
-        if dst_start.saturating_add(n) > scratch.buf.len() {
+        // Must fit `n` bytes plus trailing NUL inside `scratch.buf` (verifier rejects write at buf.len()).
+        if dst_start.saturating_add(need) > scratch.buf.len() {
             truncated = 1;
             break;
         }
